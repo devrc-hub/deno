@@ -84,7 +84,7 @@ fn get_local_completions(
 
   let mut base_path = base.to_file_path().ok()?;
   base_path.pop();
-  let mut current_path = normalize_path(base_path.join(current));
+  let mut current_path = normalize_path(&base_path.join(current));
   // if the current text does not end in a `/` then we are still selecting on
   // the parent and should show all completions from there.
   let is_parent = if !current.ends_with('/') {
