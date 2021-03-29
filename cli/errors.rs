@@ -21,7 +21,7 @@ fn get_diagnostic_class(_: &DiagnosticBuffer) -> &'static str {
   "SyntaxError"
 }
 
-pub(crate) fn get_error_class_name(e: &AnyError) -> &'static str {
+pub fn get_error_class_name(e: &AnyError) -> &'static str {
   deno_runtime::errors::get_error_class_name(e)
     .or_else(|| {
       e.downcast_ref::<ImportMapError>()
