@@ -1,28 +1,27 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 import {
   dirname,
   fromFileUrl,
   join,
-} from "https://deno.land/std@0.84.0/path/mod.ts";
-export { dirname, join };
-export { existsSync } from "https://deno.land/std@0.84.0/fs/mod.ts";
-export { readLines } from "https://deno.land/std@0.84.0/io/mod.ts";
-export { delay } from "https://deno.land/std@0.84.0/async/delay.ts";
+  resolve,
+  toFileUrl,
+} from "../test_util/std/path/mod.ts";
+export { dirname, fromFileUrl, join, resolve, toFileUrl };
+export { existsSync, walk } from "../test_util/std/fs/mod.ts";
+export { TextLineStream } from "../test_util/std/streams/delimiter.ts";
+export { delay } from "../test_util/std/async/delay.ts";
 
 export const ROOT_PATH = dirname(dirname(fromFileUrl(import.meta.url)));
 
-async function getFilesFromGit(baseDir, cmd) {
-  const p = Deno.run({
-    cmd,
-    stdout: "piped",
+async function getFilesFromGit(baseDir, args) {
+  const { success, stdout } = await Deno.spawn("git", {
+    stderr: "inherit",
+    args,
   });
-  const { success } = await p.status();
+  const output = new TextDecoder().decode(stdout);
   if (!success) {
     throw new Error("gitLsFiles failed");
   }
-
-  const output = new TextDecoder().decode(await p.output());
-  p.close();
 
   const files = output.split("\0").filter((line) => line.length > 0).map(
     (filePath) => {
@@ -36,7 +35,6 @@ async function getFilesFromGit(baseDir, cmd) {
 function gitLsFiles(baseDir, patterns) {
   baseDir = Deno.realPathSync(baseDir);
   const cmd = [
-    "git",
     "-C",
     baseDir,
     "ls-files",
@@ -55,7 +53,6 @@ function gitLsFiles(baseDir, patterns) {
 function gitStaged(baseDir, patterns) {
   baseDir = Deno.realPathSync(baseDir);
   const cmd = [
-    "git",
     "-C",
     baseDir,
     "diff",
@@ -69,7 +66,7 @@ function gitStaged(baseDir, patterns) {
   return getFilesFromGit(baseDir, cmd);
 }
 
-/** 
+/**
  *  Recursively list all files in (a subdirectory of) a git worktree.
  *    * Optionally, glob patterns may be specified to e.g. only list files with a
  *      certain extension.
@@ -77,7 +74,7 @@ function gitStaged(baseDir, patterns) {
  *    * Directory names themselves are not listed (but the files inside are).
  *    * Submodules and their contents are ignored entirely.
  *    * This function fails if the query matches no files.
- * 
+ *
  * If --staged argument was provided when program is run
  * only staged sources will be returned.
  */

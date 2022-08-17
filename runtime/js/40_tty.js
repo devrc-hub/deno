@@ -1,15 +1,16 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 "use strict";
 
 ((window) => {
   const core = window.Deno.core;
+  const ops = core.ops;
 
   function consoleSize(rid) {
-    return core.jsonOpSync("op_console_size", { rid });
+    return ops.op_console_size(rid);
   }
 
   function isatty(rid) {
-    return core.jsonOpSync("op_isatty", { rid });
+    return ops.op_isatty(rid);
   }
 
   const DEFAULT_SET_RAW_OPTIONS = {
@@ -18,7 +19,7 @@
 
   function setRaw(rid, mode, options = {}) {
     const rOptions = { ...DEFAULT_SET_RAW_OPTIONS, ...options };
-    core.jsonOpSync("op_set_raw", { rid, mode, options: rOptions });
+    ops.op_set_raw({ rid, mode, options: rOptions });
   }
 
   window.__bootstrap.tty = {

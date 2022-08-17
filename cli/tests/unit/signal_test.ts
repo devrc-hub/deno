@@ -1,195 +1,285 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
-import {
-  assert,
-  assertEquals,
-  assertThrows,
-  deferred,
-  unitTest,
-} from "./test_util.ts";
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
+import { assertEquals, assertThrows, deferred, delay } from "./test_util.ts";
 
-function defer(n: number): Promise<void> {
-  return new Promise((resolve: () => void, _) => {
-    setTimeout(resolve, n);
-  });
-}
-
-unitTest(
+Deno.test(
   { ignore: Deno.build.os !== "windows" },
-  function signalsNotImplemented(): void {
+  function signalsNotImplemented() {
+    const msg =
+      "Windows only supports ctrl-c (SIGINT) and ctrl-break (SIGBREAK).";
     assertThrows(
       () => {
-        Deno.signal(1);
+        Deno.addSignalListener("SIGALRM", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.alarm(); // for SIGALRM
+        Deno.addSignalListener("SIGCHLD", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.child(); // for SIGCHLD
+        Deno.addSignalListener("SIGHUP", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.hungup(); // for SIGHUP
+        Deno.addSignalListener("SIGIO", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.interrupt(); // for SIGINT
+        Deno.addSignalListener("SIGPIPE", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.io(); // for SIGIO
+        Deno.addSignalListener("SIGQUIT", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.pipe(); // for SIGPIPE
+        Deno.addSignalListener("SIGTERM", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.quit(); // for SIGQUIT
+        Deno.addSignalListener("SIGUSR1", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.terminate(); // for SIGTERM
+        Deno.addSignalListener("SIGUSR2", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
       () => {
-        Deno.signals.userDefined1(); // for SIGUSR1
+        Deno.addSignalListener("SIGWINCH", () => {});
       },
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
-      () => {
-        Deno.signals.userDefined2(); // for SIGURS2
-      },
+      () => Deno.addSignalListener("SIGKILL", () => {}),
       Error,
-      "not implemented",
+      msg,
     );
     assertThrows(
-      () => {
-        Deno.signals.windowChange(); // for SIGWINCH
-      },
+      () => Deno.addSignalListener("SIGSTOP", () => {}),
       Error,
-      "not implemented",
+      msg,
+    );
+    assertThrows(
+      () => Deno.addSignalListener("SIGILL", () => {}),
+      Error,
+      msg,
+    );
+    assertThrows(
+      () => Deno.addSignalListener("SIGFPE", () => {}),
+      Error,
+      msg,
+    );
+    assertThrows(
+      () => Deno.addSignalListener("SIGSEGV", () => {}),
+      Error,
+      msg,
     );
   },
 );
 
-unitTest(
-  { ignore: Deno.build.os === "windows", perms: { run: true, net: true } },
-  async function signalStreamTest(): Promise<void> {
+Deno.test(
+  {
+    ignore: Deno.build.os === "windows",
+    permissions: { run: true },
+  },
+  async function signalListenerTest() {
     const resolvable = deferred();
-    // This prevents the program from exiting.
-    const t = setInterval(() => {}, 1000);
-
     let c = 0;
-    const sig = Deno.signal(Deno.Signal.SIGUSR1);
+    const listener = () => {
+      c += 1;
+    };
+    Deno.addSignalListener("SIGUSR1", listener);
     setTimeout(async () => {
-      await defer(20);
+      // Sends SIGUSR1 3 times.
       for (const _ of Array(3)) {
-        // Sends SIGUSR1 3 times.
-        Deno.kill(Deno.pid, Deno.Signal.SIGUSR1);
-        await defer(20);
+        await delay(20);
+        Deno.kill(Deno.pid, "SIGUSR1");
       }
-      sig.dispose();
+      await delay(20);
+      Deno.removeSignalListener("SIGUSR1", listener);
       resolvable.resolve();
     });
 
-    for await (const _ of sig) {
-      c += 1;
-    }
-
+    await resolvable;
     assertEquals(c, 3);
-
-    clearInterval(t);
-    await resolvable;
   },
 );
 
-unitTest(
-  { ignore: Deno.build.os === "windows", perms: { run: true } },
-  async function signalPromiseTest(): Promise<void> {
+Deno.test(
+  {
+    ignore: Deno.build.os === "windows",
+    permissions: { run: true },
+  },
+  async function multipleSignalListenerTest() {
     const resolvable = deferred();
-    // This prevents the program from exiting.
-    const t = setInterval(() => {}, 1000);
-
-    const sig = Deno.signal(Deno.Signal.SIGUSR1);
-    setTimeout(() => {
-      Deno.kill(Deno.pid, Deno.Signal.SIGUSR1);
+    let c = "";
+    const listener0 = () => {
+      c += "0";
+    };
+    const listener1 = () => {
+      c += "1";
+    };
+    Deno.addSignalListener("SIGUSR2", listener0);
+    Deno.addSignalListener("SIGUSR2", listener1);
+    setTimeout(async () => {
+      // Sends SIGUSR2 3 times.
+      for (const _ of Array(3)) {
+        await delay(20);
+        Deno.kill(Deno.pid, "SIGUSR2");
+      }
+      await delay(20);
+      Deno.removeSignalListener("SIGUSR2", listener1);
+      // Sends SIGUSR2 3 times.
+      for (const _ of Array(3)) {
+        await delay(20);
+        Deno.kill(Deno.pid, "SIGUSR2");
+      }
+      await delay(20);
+      // Sends SIGUSR1 (irrelevant signal) 3 times.
+      for (const _ of Array(3)) {
+        await delay(20);
+        Deno.kill(Deno.pid, "SIGUSR1");
+      }
+      await delay(20);
+      Deno.removeSignalListener("SIGUSR2", listener0);
       resolvable.resolve();
-    }, 20);
-    await sig;
-    sig.dispose();
+    });
 
-    clearInterval(t);
     await resolvable;
+    // The first 3 events are handled by both handlers
+    // The last 3 events are handled only by handler0
+    assertEquals(c, "010101000");
   },
 );
 
-unitTest(
-  { ignore: Deno.build.os === "windows", perms: { run: true } },
-  function signalShorthandsTest(): void {
-    let s: Deno.SignalStream;
-    s = Deno.signals.alarm(); // for SIGALRM
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.child(); // for SIGCHLD
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.hungup(); // for SIGHUP
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.interrupt(); // for SIGINT
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.io(); // for SIGIO
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.pipe(); // for SIGPIPE
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.quit(); // for SIGQUIT
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.terminate(); // for SIGTERM
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.userDefined1(); // for SIGUSR1
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.userDefined2(); // for SIGURS2
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
-    s = Deno.signals.windowChange(); // for SIGWINCH
-    assert(s instanceof Deno.SignalStream);
-    s.dispose();
+// This tests that pending op_signal_poll doesn't block the runtime from exiting the process.
+Deno.test(
+  {
+    permissions: { run: true, read: true },
+  },
+  async function canExitWhileListeningToSignal() {
+    const { code } = await Deno.spawn(Deno.execPath(), {
+      args: [
+        "eval",
+        "--unstable",
+        "Deno.addSignalListener('SIGINT', () => {})",
+      ],
+    });
+    assertEquals(code, 0);
+  },
+);
+
+Deno.test(
+  {
+    ignore: Deno.build.os !== "windows",
+    permissions: { run: true },
+  },
+  function windowsThrowsOnNegativeProcessIdTest() {
+    assertThrows(
+      () => {
+        Deno.kill(-1, "SIGKILL");
+      },
+      TypeError,
+      "Invalid pid",
+    );
+  },
+);
+
+Deno.test(
+  {
+    ignore: Deno.build.os !== "windows",
+    permissions: { run: true },
+  },
+  function noOpenSystemIdleProcessTest() {
+    let signal: Deno.Signal = "SIGKILL";
+
+    assertThrows(
+      () => {
+        Deno.kill(0, signal);
+      },
+      TypeError,
+      `Invalid pid`,
+    );
+
+    signal = "SIGTERM";
+    assertThrows(
+      () => {
+        Deno.kill(0, signal);
+      },
+      TypeError,
+      `Invalid pid`,
+    );
+  },
+);
+
+Deno.test(function signalInvalidHandlerTest() {
+  assertThrows(() => {
+    // deno-lint-ignore no-explicit-any
+    Deno.addSignalListener("SIGINT", "handler" as any);
+  });
+  assertThrows(() => {
+    // deno-lint-ignore no-explicit-any
+    Deno.removeSignalListener("SIGINT", "handler" as any);
+  });
+});
+
+Deno.test(
+  {
+    ignore: Deno.build.os === "windows",
+    permissions: { run: true },
+  },
+  function signalForbiddenSignalTest() {
+    assertThrows(
+      () => Deno.addSignalListener("SIGKILL", () => {}),
+      TypeError,
+      "Binding to signal 'SIGKILL' is not allowed",
+    );
+    assertThrows(
+      () => Deno.addSignalListener("SIGSTOP", () => {}),
+      TypeError,
+      "Binding to signal 'SIGSTOP' is not allowed",
+    );
+    assertThrows(
+      () => Deno.addSignalListener("SIGILL", () => {}),
+      TypeError,
+      "Binding to signal 'SIGILL' is not allowed",
+    );
+    assertThrows(
+      () => Deno.addSignalListener("SIGFPE", () => {}),
+      TypeError,
+      "Binding to signal 'SIGFPE' is not allowed",
+    );
+    assertThrows(
+      () => Deno.addSignalListener("SIGSEGV", () => {}),
+      TypeError,
+      "Binding to signal 'SIGSEGV' is not allowed",
+    );
   },
 );

@@ -1,6 +1,7 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 
 use crate::RcLike;
+use crate::Resource;
 use futures::future::FusedFuture;
 use futures::future::Future;
 use futures::future::TryFuture;
@@ -8,6 +9,7 @@ use futures::task::Context;
 use futures::task::Poll;
 use pin_project::pin_project;
 use std::any::type_name;
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
@@ -81,6 +83,16 @@ impl<F: Future> Future for Cancelable<F> {
 impl<F: Future> FusedFuture for Cancelable<F> {
   fn is_terminated(&self) -> bool {
     matches!(self, Self::Terminated)
+  }
+}
+
+impl Resource for CancelHandle {
+  fn name(&self) -> Cow<str> {
+    "cancellation".into()
+  }
+
+  fn close(self: Rc<Self>) {
+    self.cancel();
   }
 }
 
@@ -204,16 +216,14 @@ mod internal {
       mut registration: Pin<&mut Registration>,
       cx: &mut Context,
     ) -> Poll<Result<F::Output, Canceled>> {
-      // If this future is being polled for the first time, perform an extra
-      // cancellation check _before_ polling the inner future. The reason to do
-      // this is that polling the inner future for the first time might start
-      // some activity that cannot actually be canceled (e.g. running a compute
-      // job in a thread pool), so we should try to never start it at all.
-      match &*registration {
-        Registration::WillRegister { head_node } if head_node.is_canceled() => {
-          return Poll::Ready(Err(Canceled));
-        }
-        _ => {}
+      // Do a cancellation check _before_ polling the inner future. If it has
+      // already been canceled the inner future will not be polled.
+      let node = match &*registration {
+        Registration::WillRegister { head_node } => &*head_node,
+        Registration::Registered { node } => node,
+      };
+      if node.is_canceled() {
+        return Poll::Ready(Err(Canceled));
       }
 
       match future.poll(cx) {
@@ -292,13 +302,19 @@ mod internal {
         Some((head, rc)) => {
           // Register this `Cancelable` node with a `CancelHandle` head node.
           assert_ne!(self, head);
+          // TODO(piscisaureus): safety comment
+          #[allow(clippy::undocumented_unsafe_blocks)]
           let self_inner = unsafe { &mut *self.inner.get() };
+          // TODO(piscisaureus): safety comment
+          #[allow(clippy::undocumented_unsafe_blocks)]
           let head_inner = unsafe { &mut *head.inner.get() };
           self_inner.link(waker, head_inner, rc)
         }
         None => {
           // This `Cancelable` has already been linked to a `CancelHandle` head
           // node; just update our stored `Waker` if necessary.
+          // TODO(piscisaureus): safety comment
+          #[allow(clippy::undocumented_unsafe_blocks)]
           let inner = unsafe { &mut *self.inner.get() };
           inner.update_waker(waker)
         }
@@ -306,11 +322,15 @@ mod internal {
     }
 
     pub fn cancel(&self) {
+      // TODO(piscisaureus): safety comment
+      #[allow(clippy::undocumented_unsafe_blocks)]
       let inner = unsafe { &mut *self.inner.get() };
       inner.cancel();
     }
 
     pub fn is_canceled(&self) -> bool {
+      // TODO(piscisaureus): safety comment
+      #[allow(clippy::undocumented_unsafe_blocks)]
       let inner = unsafe { &mut *self.inner.get() };
       inner.is_canceled()
     }
@@ -327,6 +347,8 @@ mod internal {
 
   impl Drop for Node {
     fn drop(&mut self) {
+      // TODO(piscisaureus): safety comment
+      #[allow(clippy::undocumented_unsafe_blocks)]
       let inner = unsafe { &mut *self.inner.get() };
       inner.unlink();
     }
@@ -382,6 +404,8 @@ mod internal {
           prev: next_prev_nn,
           ..
         } => {
+          // TODO(piscisaureus): safety comment
+          #[allow(clippy::undocumented_unsafe_blocks)]
           let prev = unsafe { &mut *next_prev_nn.as_ptr() };
           match prev {
             NodeInner::Linked {
@@ -434,10 +458,14 @@ mod internal {
         if prev_nn == next_nn {
           // There were only two nodes in this chain; after unlinking ourselves
           // the other node is no longer linked.
+          // TODO(piscisaureus): safety comment
+          #[allow(clippy::undocumented_unsafe_blocks)]
           let other = unsafe { prev_nn.as_mut() };
           *other = NodeInner::Unlinked;
         } else {
           // The chain had more than two nodes.
+          // TODO(piscisaureus): safety comment
+          #[allow(clippy::undocumented_unsafe_blocks)]
           match unsafe { prev_nn.as_mut() } {
             NodeInner::Linked {
               next: prev_next_nn, ..
@@ -446,6 +474,8 @@ mod internal {
             }
             _ => unreachable!(),
           }
+          // TODO(piscisaureus): safety comment
+          #[allow(clippy::undocumented_unsafe_blocks)]
           match unsafe { next_nn.as_mut() } {
             NodeInner::Linked {
               prev: next_prev_nn, ..
@@ -462,21 +492,25 @@ mod internal {
     /// must refer to a head (`CancelHandle`) node.
     fn cancel(&mut self) {
       let mut head_nn = NonNull::from(self);
-      let mut item_nn;
 
+      // TODO(piscisaureus): safety comment
+      #[allow(clippy::undocumented_unsafe_blocks)]
       // Mark the head node as canceled.
-      match replace(unsafe { head_nn.as_mut() }, NodeInner::Canceled) {
-        NodeInner::Linked {
-          kind: NodeKind::Head { .. },
-          next: next_nn,
-          ..
-        } => item_nn = next_nn,
-        NodeInner::Unlinked | NodeInner::Canceled => return,
-        _ => unreachable!(),
-      };
+      let mut item_nn =
+        match replace(unsafe { head_nn.as_mut() }, NodeInner::Canceled) {
+          NodeInner::Linked {
+            kind: NodeKind::Head { .. },
+            next: next_nn,
+            ..
+          } => next_nn,
+          NodeInner::Unlinked | NodeInner::Canceled => return,
+          _ => unreachable!(),
+        };
 
       // Cancel all item nodes in the chain, waking each stored `Waker`.
       while item_nn != head_nn {
+        // TODO(piscisaureus): safety comment
+        #[allow(clippy::undocumented_unsafe_blocks)]
         match replace(unsafe { item_nn.as_mut() }, NodeInner::Canceled) {
           NodeInner::Linked {
             kind: NodeKind::Item { waker },
@@ -491,17 +525,13 @@ mod internal {
       }
     }
 
-    /// Returns true if this node has been marked for cancellation. Note that
-    /// `self` must refer to a head (`CancelHandle`) node.
+    /// Returns true if this node has been marked for cancellation. This method
+    /// may be used with both head (`CancelHandle`) and item (`Cancelable`)
+    /// nodes.
     fn is_canceled(&self) -> bool {
       match self {
-        NodeInner::Unlinked => false,
-        NodeInner::Linked {
-          kind: NodeKind::Head { .. },
-          ..
-        } => false,
+        NodeInner::Unlinked | NodeInner::Linked { .. } => false,
         NodeInner::Canceled => true,
-        _ => unreachable!(),
       }
     }
   }
@@ -517,7 +547,7 @@ mod internal {
       /// the heap allocation that contains the `CancelHandle`. Without this
       /// extra weak reference, `Rc::get_mut()` might succeed and allow the
       /// `CancelHandle` to be moved when it isn't safe to do so.
-      weak_pin: Weak<dyn Any>,
+      _weak_pin: Weak<dyn Any>,
     },
     /// All item nodes in a chain are associated with a `Cancelable` head node.
     Item {
@@ -529,8 +559,8 @@ mod internal {
 
   impl NodeKind {
     fn head(rc_pin: &Rc<dyn Any>) -> Self {
-      let weak_pin = Rc::downgrade(rc_pin);
-      Self::Head { weak_pin }
+      let _weak_pin = Rc::downgrade(rc_pin);
+      Self::Head { _weak_pin }
     }
 
     fn item(waker: &Waker) -> Self {
@@ -543,12 +573,13 @@ mod internal {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::error::AnyError;
+  use anyhow::Error;
   use futures::future::pending;
   use futures::future::poll_fn;
   use futures::future::ready;
   use futures::future::FutureExt;
   use futures::future::TryFutureExt;
+  use futures::pending;
   use futures::select;
   use futures::task::noop_waker_ref;
   use futures::task::Context;
@@ -557,6 +588,7 @@ mod tests {
   use std::io;
   use tokio::net::TcpStream;
   use tokio::spawn;
+  use tokio::task::yield_now;
 
   fn box_fused<'a, F: FusedFuture + 'a>(
     future: F,
@@ -635,19 +667,19 @@ mod tests {
           results,
           [Err(Canceled), Err(Canceled), Ok("C"), Err(Canceled)]
         ),
-        1 => assert_eq!(results, [Ok("E"), Err(Canceled)]),
+        1 => assert_eq!(results, [Err(Canceled), Err(Canceled)]),
         2 => assert_eq!(results, []),
         3 => assert_eq!(results, [Ok("G")]),
-        4 => assert_eq!(results, [Ok("H"), Err(Canceled)]),
+        4 => assert_eq!(results, [Err(Canceled), Err(Canceled)]),
         5 => assert_eq!(results, [Ok("J"), Ok("K")]),
         _ => unreachable!(),
       }
     }
 
-    assert_eq!(futures.into_iter().any(|fut| !fut.is_terminated()), false);
+    assert!(!futures.into_iter().any(|fut| !fut.is_terminated()));
 
     let cancel_handles = [cancel_now, cancel_at_0, cancel_at_1, cancel_at_4];
-    assert_eq!(cancel_handles.iter().any(|c| !c.is_canceled()), false);
+    assert!(!cancel_handles.iter().any(|c| !c.is_canceled()));
   }
 
   #[tokio::test]
@@ -656,7 +688,7 @@ mod tests {
       // Cancel a spawned task before it actually runs.
       let cancel_handle = Rc::new(CancelHandle::new());
       let future = spawn(async { panic!("the task should not be spawned") })
-        .map_err(AnyError::from)
+        .map_err(Error::from)
         .try_or_cancel(&cancel_handle);
       cancel_handle.cancel();
       let error = future.await.unwrap_err();
@@ -680,6 +712,54 @@ mod tests {
     }
   }
 
+  #[tokio::test]
+  async fn future_cancels_itself_before_completion() {
+    // A future cancels itself before it reaches completion. This future should
+    // indeed get canceled and should not be polled again.
+    let cancel_handle = CancelHandle::new_rc();
+    let result = async {
+      cancel_handle.cancel();
+      yield_now().await;
+      unreachable!();
+    }
+    .or_cancel(&cancel_handle)
+    .await;
+    assert_eq!(result.unwrap_err(), Canceled);
+  }
+
+  #[tokio::test]
+  async fn future_cancels_itself_and_hangs() {
+    // A future cancels itself, after which it returns `Poll::Pending` without
+    // setting up a waker that would allow it to make progress towards
+    // completion. Nevertheless, the `Cancelable` wrapper future must finish.
+    let cancel_handle = CancelHandle::new_rc();
+    let result = async {
+      yield_now().await;
+      cancel_handle.cancel();
+      pending!();
+      unreachable!();
+    }
+    .or_cancel(&cancel_handle)
+    .await;
+    assert_eq!(result.unwrap_err(), Canceled);
+  }
+
+  #[tokio::test]
+  async fn future_cancels_itself_and_completes() {
+    // A TryFuture attempts to cancel itself while it is getting polled, and
+    // yields a result from the very same `poll()` call. Because this future
+    // actually reaches completion, the attempted cancellation has no effect.
+    let cancel_handle = CancelHandle::new_rc();
+    let result = async {
+      yield_now().await;
+      cancel_handle.cancel();
+      Ok::<_, io::Error>("done")
+    }
+    .try_or_cancel(&cancel_handle)
+    .await;
+    assert_eq!(result.unwrap(), "done");
+  }
+
   #[test]
   fn cancel_handle_pinning() {
     let mut cancel_handle = CancelHandle::new_rc();
@@ -689,6 +769,7 @@ mod tests {
     assert!(Rc::get_mut(&mut cancel_handle).is_some());
 
     let mut future = pending::<Never>().or_cancel(&cancel_handle);
+    // SAFETY: `Cancelable` pins the future
     let future = unsafe { Pin::new_unchecked(&mut future) };
 
     // There are two `Rc<CancelHandle>` references now, so this fails.

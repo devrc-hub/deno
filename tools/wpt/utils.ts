@@ -1,22 +1,31 @@
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 /// FLAGS
 
-import { parse } from "https://deno.land/std@0.84.0/flags/mod.ts";
-import { join, ROOT_PATH } from "../util.js";
+import { parse } from "../../test_util/std/flags/mod.ts";
+import { join, resolve, ROOT_PATH } from "../util.js";
 
 export const {
   json,
+  wptreport,
   quiet,
   release,
   rebuild,
   ["--"]: rest,
   ["auto-config"]: autoConfig,
+  ["inspect-brk"]: inspectBrk,
+  binary,
 } = parse(Deno.args, {
   "--": true,
-  boolean: ["quiet", "release", "no-interactive"],
-  string: ["json"],
+  boolean: ["quiet", "release", "no-interactive", "inspect-brk"],
+  string: ["json", "wptreport", "binary"],
 });
 
-/// PAGE ROOT
+export function denoBinary() {
+  if (binary) {
+    return resolve(binary);
+  }
+  return join(ROOT_PATH, `./target/${release ? "release" : "debug"}/deno`);
+}
 
 /// WPT TEST MANIFEST
 
@@ -37,13 +46,14 @@ export type ManifestTestVariation = [
   options: ManifestTestOptions,
 ];
 export interface ManifestTestOptions {
-  name?: string;
+  // deno-lint-ignore camelcase
+  script_metadata: [string, string][];
 }
 
 const MANIFEST_PATH = join(ROOT_PATH, "./tools/wpt/manifest.json");
 
 export async function updateManifest() {
-  const proc = runPy(
+  const status = await runPy(
     [
       "wpt",
       "manifest",
@@ -54,8 +64,7 @@ export async function updateManifest() {
       ...(rebuild ? ["--rebuild"] : []),
     ],
     {},
-  );
-  const status = await proc.status();
+  ).status;
   assert(status.success, "updating wpt manifest should succeed");
 }
 
@@ -84,38 +93,6 @@ export function saveExpectation(expectation: Expectation) {
   );
 }
 
-export function generateTestExpectations(filter: string[]) {
-  const manifest = getManifest();
-
-  function walk(folder: ManifestFolder, prefix: string): Expectation {
-    const expectation: Expectation = {};
-    for (const key in folder) {
-      const path = `${prefix}/${key}`;
-      const entry = folder[key];
-      if (Array.isArray(entry)) {
-        if (!filter.find((filter) => path.startsWith(filter))) continue;
-        if (key.endsWith(".js")) {
-          expectation[key] = false;
-        }
-      } else {
-        if (!filter.find((filter) => `${path}/`.startsWith(filter))) continue;
-        expectation[key] = walk(entry, path);
-      }
-    }
-    for (const key in expectation) {
-      const entry = expectation[key];
-      if (typeof entry === "object") {
-        if (Object.keys(expectation[key]).length === 0) {
-          delete expectation[key];
-        }
-      }
-    }
-    return expectation;
-  }
-
-  return walk(manifest.items.testharness, "");
-}
-
 export function getExpectFailForCase(
   expectation: boolean | string[],
   caseName: string,
@@ -141,23 +118,26 @@ export function assert(condition: unknown, message: string): asserts condition {
   }
 }
 
-export function runPy(
+export function runPy<T extends Omit<Deno.SpawnOptions, "cwd">>(
   args: string[],
-  options: Omit<Omit<Deno.RunOptions, "cmd">, "cwd">,
-): Deno.Process {
+  options: T,
+): Deno.Child<T> {
   const cmd = Deno.build.os == "windows" ? "python.exe" : "python3";
-  return Deno.run({
-    cmd: [cmd, ...args],
-    cwd: join(ROOT_PATH, "./test_util/wpt/"),
+  return Deno.spawnChild(cmd, {
+    args,
+    stdout: "inherit",
+    stderr: "inherit",
     ...options,
+    cwd: join(ROOT_PATH, "./test_util/wpt/"),
   });
 }
 
 export async function checkPy3Available() {
-  const proc = runPy(["--version"], { stdout: "piped" });
-  const status = await proc.status();
-  assert(status.success, "failed to run python --version");
-  const output = new TextDecoder().decode(await proc.output());
+  const { success, stdout } = await runPy(["--version"], {
+    stdout: "piped",
+  }).output();
+  assert(success, "failed to run python --version");
+  const output = new TextDecoder().decode(stdout);
   assert(
     output.includes("Python 3."),
     `The ${
@@ -167,11 +147,64 @@ export async function checkPy3Available() {
 }
 
 export async function cargoBuild() {
-  const proc = Deno.run({
-    cmd: ["cargo", "build", ...(release ? ["--release"] : [])],
+  if (binary) return;
+  const { success } = await Deno.spawn("cargo", {
+    args: ["build", ...(release ? ["--release"] : [])],
     cwd: ROOT_PATH,
+    stdout: "inherit",
+    stderr: "inherit",
   });
-  const status = await proc.status();
-  proc.close();
-  assert(status.success, "cargo build failed");
+  assert(success, "cargo build failed");
+}
+
+export function escapeLoneSurrogates(input: string): string;
+export function escapeLoneSurrogates(input: string | null): string | null;
+export function escapeLoneSurrogates(input: string | null): string | null {
+  if (input === null) return null;
+  return input.replace(
+    /[\uD800-\uDFFF]/gu,
+    (match) => `U+${match.charCodeAt(0).toString(16)}`,
+  );
+}
+
+/// WPTREPORT
+
+export async function generateRunInfo(): Promise<unknown> {
+  const oses = {
+    "windows": "win",
+    "darwin": "mac",
+    "linux": "linux",
+  };
+  const proc = await Deno.spawn("git", {
+    args: ["rev-parse", "HEAD"],
+    cwd: join(ROOT_PATH, "test_util", "wpt"),
+    stderr: "inherit",
+  });
+  const revision = (new TextDecoder().decode(proc.stdout)).trim();
+  const proc2 = await Deno.spawn(denoBinary(), {
+    args: ["eval", "console.log(JSON.stringify(Deno.version))"],
+    cwd: join(ROOT_PATH, "test_util", "wpt"),
+  });
+  const version = JSON.parse(new TextDecoder().decode(proc2.stdout));
+  const runInfo = {
+    "os": oses[Deno.build.os],
+    "processor": Deno.build.arch,
+    "version": "unknown",
+    "os_version": "unknown",
+    "bits": 64,
+    "has_sandbox": true,
+    "webrender": false,
+    "automation": false,
+    "linux_distro": "unknown",
+    "revision": revision,
+    "python_version": 3,
+    "product": "deno",
+    "debug": false,
+    "browser_version": version.deno,
+    "browser_channel": version.deno.includes("+") ? "canary" : "stable",
+    "verify": false,
+    "wasm": false,
+    "headless": true,
+  };
+  return runInfo;
 }

@@ -1,37 +1,36 @@
 import {
   assert,
   assertEquals,
+  assertRejects,
   assertThrows,
-  assertThrowsAsync,
-  unitTest,
 } from "./test_util.ts";
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function writeTextFileSyncSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function writeTextFileSyncSuccess() {
     const filename = Deno.makeTempDirSync() + "/test.txt";
     Deno.writeTextFileSync(filename, "Hello");
     const dataRead = Deno.readTextFileSync(filename);
-    assertEquals("Hello", dataRead);
+    assertEquals(dataRead, "Hello");
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function writeTextFileSyncByUrl(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function writeTextFileSyncByUrl() {
     const tempDir = Deno.makeTempDirSync();
     const fileUrl = new URL(
       `file://${Deno.build.os === "windows" ? "/" : ""}${tempDir}/test.txt`,
     );
     Deno.writeTextFileSync(fileUrl, "Hello");
     const dataRead = Deno.readTextFileSync(fileUrl);
-    assertEquals("Hello", dataRead);
+    assertEquals(dataRead, "Hello");
 
     Deno.removeSync(fileUrl, { recursive: true });
   },
 );
 
-unitTest({ perms: { write: true } }, function writeTextFileSyncFail(): void {
+Deno.test({ permissions: { write: true } }, function writeTextFileSyncFail() {
   const filename = "/baddir/test.txt";
   // The following should fail because /baddir doesn't exist (hopefully).
   assertThrows(() => {
@@ -39,7 +38,7 @@ unitTest({ perms: { write: true } }, function writeTextFileSyncFail(): void {
   }, Deno.errors.NotFound);
 });
 
-unitTest({ perms: { write: false } }, function writeTextFileSyncPerm(): void {
+Deno.test({ permissions: { write: false } }, function writeTextFileSyncPerm() {
   const filename = "/baddir/test.txt";
   // The following should fail due to no write permission
   assertThrows(() => {
@@ -47,9 +46,9 @@ unitTest({ perms: { write: false } }, function writeTextFileSyncPerm(): void {
   }, Deno.errors.PermissionDenied);
 });
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function writeTextFileSyncUpdateMode(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function writeTextFileSyncUpdateMode() {
     if (Deno.build.os !== "windows") {
       const data = "Hello";
       const filename = Deno.makeTempDirSync() + "/test.txt";
@@ -61,9 +60,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function writeTextFileSyncCreate(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function writeTextFileSyncCreate() {
     const data = "Hello";
     const filename = Deno.makeTempDirSync() + "/test.txt";
     let caughtError = false;
@@ -79,77 +78,77 @@ unitTest(
     // Turn on create, should have no error
     Deno.writeTextFileSync(filename, data, { create: true });
     Deno.writeTextFileSync(filename, data, { create: false });
-    assertEquals("Hello", Deno.readTextFileSync(filename));
+    assertEquals(Deno.readTextFileSync(filename), "Hello");
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function writeTextFileSyncAppend(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function writeTextFileSyncAppend() {
     const data = "Hello";
     const filename = Deno.makeTempDirSync() + "/test.txt";
     Deno.writeTextFileSync(filename, data);
     Deno.writeTextFileSync(filename, data, { append: true });
-    assertEquals("HelloHello", Deno.readTextFileSync(filename));
+    assertEquals(Deno.readTextFileSync(filename), "HelloHello");
     // Now attempt overwrite
     Deno.writeTextFileSync(filename, data, { append: false });
-    assertEquals("Hello", Deno.readTextFileSync(filename));
+    assertEquals(Deno.readTextFileSync(filename), "Hello");
     // append not set should also overwrite
     Deno.writeTextFileSync(filename, data);
-    assertEquals("Hello", Deno.readTextFileSync(filename));
+    assertEquals(Deno.readTextFileSync(filename), "Hello");
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function writeTextFileSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function writeTextFileSuccess() {
     const filename = Deno.makeTempDirSync() + "/test.txt";
     await Deno.writeTextFile(filename, "Hello");
     const dataRead = Deno.readTextFileSync(filename);
-    assertEquals("Hello", dataRead);
+    assertEquals(dataRead, "Hello");
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function writeTextFileByUrl(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function writeTextFileByUrl() {
     const tempDir = Deno.makeTempDirSync();
     const fileUrl = new URL(
       `file://${Deno.build.os === "windows" ? "/" : ""}${tempDir}/test.txt`,
     );
     await Deno.writeTextFile(fileUrl, "Hello");
     const dataRead = Deno.readTextFileSync(fileUrl);
-    assertEquals("Hello", dataRead);
+    assertEquals(dataRead, "Hello");
 
     Deno.removeSync(fileUrl, { recursive: true });
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function writeTextFileNotFound(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function writeTextFileNotFound() {
     const filename = "/baddir/test.txt";
     // The following should fail because /baddir doesn't exist (hopefully).
-    await assertThrowsAsync(async () => {
+    await assertRejects(async () => {
       await Deno.writeTextFile(filename, "Hello");
     }, Deno.errors.NotFound);
   },
 );
 
-unitTest(
-  { perms: { write: false } },
-  async function writeTextFilePerm(): Promise<void> {
+Deno.test(
+  { permissions: { write: false } },
+  async function writeTextFilePerm() {
     const filename = "/baddir/test.txt";
     // The following should fail due to no write permission
-    await assertThrowsAsync(async () => {
+    await assertRejects(async () => {
       await Deno.writeTextFile(filename, "Hello");
     }, Deno.errors.PermissionDenied);
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function writeTextFileUpdateMode(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function writeTextFileUpdateMode() {
     if (Deno.build.os !== "windows") {
       const data = "Hello";
       const filename = Deno.makeTempDirSync() + "/test.txt";
@@ -161,9 +160,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function writeTextFileCreate(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function writeTextFileCreate() {
     const data = "Hello";
     const filename = Deno.makeTempDirSync() + "/test.txt";
     let caughtError = false;
@@ -179,23 +178,23 @@ unitTest(
     // Turn on create, should have no error
     await Deno.writeTextFile(filename, data, { create: true });
     await Deno.writeTextFile(filename, data, { create: false });
-    assertEquals("Hello", Deno.readTextFileSync(filename));
+    assertEquals(Deno.readTextFileSync(filename), "Hello");
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function writeTextFileAppend(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function writeTextFileAppend() {
     const data = "Hello";
     const filename = Deno.makeTempDirSync() + "/test.txt";
     await Deno.writeTextFile(filename, data);
     await Deno.writeTextFile(filename, data, { append: true });
-    assertEquals("HelloHello", Deno.readTextFileSync(filename));
+    assertEquals(Deno.readTextFileSync(filename), "HelloHello");
     // Now attempt overwrite
     await Deno.writeTextFile(filename, data, { append: false });
-    assertEquals("Hello", Deno.readTextFileSync(filename));
+    assertEquals(Deno.readTextFileSync(filename), "Hello");
     // append not set should also overwrite
     await Deno.writeTextFile(filename, data);
-    assertEquals("Hello", Deno.readTextFileSync(filename));
+    assertEquals(Deno.readTextFileSync(filename), "Hello");
   },
 );

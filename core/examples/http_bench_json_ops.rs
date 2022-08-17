@@ -1,26 +1,27 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
-use deno_core::error::bad_resource_id;
-use deno_core::error::AnyError;
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
+use deno_core::anyhow::Error;
+use deno_core::op;
 use deno_core::AsyncRefCell;
-use deno_core::BufVec;
+use deno_core::AsyncResult;
 use deno_core::CancelHandle;
 use deno_core::CancelTryFuture;
 use deno_core::JsRuntime;
 use deno_core::OpState;
 use deno_core::RcRef;
 use deno_core::Resource;
+use deno_core::ResourceId;
 use deno_core::ZeroCopyBuf;
-use serde::Deserialize;
-use serde::Serialize;
-use serde_json::Value;
 use std::cell::RefCell;
-use std::convert::TryFrom;
 use std::env;
-use std::io::Error;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+
+// This is a hack to make the `#[op]` macro work with
+// deno_core examples.
+// You can remove this:
+use deno_core::*;
 
 struct Logger;
 
@@ -47,7 +48,7 @@ struct TcpListener {
 }
 
 impl TcpListener {
-  async fn accept(self: Rc<Self>) -> Result<TcpStream, Error> {
+  async fn accept(self: Rc<Self>) -> Result<TcpStream, std::io::Error> {
     let cancel = RcRef::map(&self, |r| &r.cancel);
     let stream = self.inner.accept().try_or_cancel(cancel).await?.0.into();
     Ok(stream)
@@ -61,7 +62,7 @@ impl Resource for TcpListener {
 }
 
 impl TryFrom<std::net::TcpListener> for TcpListener {
-  type Error = Error;
+  type Error = std::io::Error;
   fn try_from(
     std_listener: std::net::TcpListener,
   ) -> Result<Self, Self::Error> {
@@ -82,19 +83,38 @@ struct TcpStream {
 }
 
 impl TcpStream {
-  async fn read(self: Rc<Self>, buf: &mut [u8]) -> Result<usize, Error> {
+  async fn read(
+    self: Rc<Self>,
+    mut buf: ZeroCopyBuf,
+  ) -> Result<(usize, ZeroCopyBuf), Error> {
     let mut rd = RcRef::map(&self, |r| &r.rd).borrow_mut().await;
     let cancel = RcRef::map(self, |r| &r.cancel);
-    rd.read(buf).try_or_cancel(cancel).await
+    let nread = rd
+      .read(&mut buf)
+      .try_or_cancel(cancel)
+      .await
+      .map_err(Error::from)?;
+    Ok((nread, buf))
   }
 
-  async fn write(self: Rc<Self>, buf: &[u8]) -> Result<usize, Error> {
+  async fn write(self: Rc<Self>, buf: ZeroCopyBuf) -> Result<usize, Error> {
     let mut wr = RcRef::map(self, |r| &r.wr).borrow_mut().await;
-    wr.write(buf).await
+    wr.write(&buf).await.map_err(Error::from)
   }
 }
 
 impl Resource for TcpStream {
+  fn read_return(
+    self: Rc<Self>,
+    buf: ZeroCopyBuf,
+  ) -> AsyncResult<(usize, ZeroCopyBuf)> {
+    Box::pin(self.read(buf))
+  }
+
+  fn write(self: Rc<Self>, buf: ZeroCopyBuf) -> AsyncResult<usize> {
+    Box::pin(self.write(buf))
+  }
+
   fn close(self: Rc<Self>) {
     self.cancel.cancel()
   }
@@ -112,96 +132,38 @@ impl From<tokio::net::TcpStream> for TcpStream {
 }
 
 fn create_js_runtime() -> JsRuntime {
-  let mut runtime = JsRuntime::new(Default::default());
-  runtime.register_op("listen", deno_core::json_op_sync(op_listen));
-  runtime.register_op("close", deno_core::json_op_sync(op_close));
-  runtime.register_op("accept", deno_core::json_op_async(op_accept));
-  runtime.register_op("read", deno_core::json_op_async(op_read));
-  runtime.register_op("write", deno_core::json_op_async(op_write));
-  runtime
+  let ext = deno_core::Extension::builder()
+    .ops(vec![op_listen::decl(), op_accept::decl()])
+    .build();
+
+  JsRuntime::new(deno_core::RuntimeOptions {
+    extensions: vec![ext],
+    ..Default::default()
+  })
 }
 
-#[derive(Deserialize, Serialize)]
-struct ResourceId {
-  rid: u32,
-}
-
-fn op_listen(
-  state: &mut OpState,
-  _args: (),
-  _bufs: &mut [ZeroCopyBuf],
-) -> Result<ResourceId, AnyError> {
+#[op]
+fn op_listen(state: &mut OpState) -> Result<ResourceId, Error> {
   log::debug!("listen");
   let addr = "127.0.0.1:4544".parse::<SocketAddr>().unwrap();
   let std_listener = std::net::TcpListener::bind(&addr)?;
   std_listener.set_nonblocking(true)?;
   let listener = TcpListener::try_from(std_listener)?;
   let rid = state.resource_table.add(listener);
-  Ok(ResourceId { rid })
+  Ok(rid)
 }
 
-fn op_close(
-  state: &mut OpState,
-  args: ResourceId,
-  _buf: &mut [ZeroCopyBuf],
-) -> Result<(), AnyError> {
-  log::debug!("close rid={}", args.rid);
-  state
-    .resource_table
-    .close(args.rid)
-    .map(|_| ())
-    .ok_or_else(bad_resource_id)
-}
-
+#[op]
 async fn op_accept(
   state: Rc<RefCell<OpState>>,
-  args: ResourceId,
-  _bufs: BufVec,
-) -> Result<ResourceId, AnyError> {
-  log::debug!("accept rid={}", args.rid);
+  rid: ResourceId,
+) -> Result<ResourceId, Error> {
+  log::debug!("accept rid={}", rid);
 
-  let listener = state
-    .borrow()
-    .resource_table
-    .get::<TcpListener>(args.rid)
-    .ok_or_else(bad_resource_id)?;
+  let listener = state.borrow().resource_table.get::<TcpListener>(rid)?;
   let stream = listener.accept().await?;
   let rid = state.borrow_mut().resource_table.add(stream);
-  Ok(ResourceId { rid })
-}
-
-async fn op_read(
-  state: Rc<RefCell<OpState>>,
-  args: ResourceId,
-  mut bufs: BufVec,
-) -> Result<Value, AnyError> {
-  assert_eq!(bufs.len(), 1, "Invalid number of arguments");
-  log::debug!("read rid={}", args.rid);
-
-  let stream = state
-    .borrow()
-    .resource_table
-    .get::<TcpStream>(args.rid)
-    .ok_or_else(bad_resource_id)?;
-  let nread = stream.read(&mut bufs[0]).await?;
-  Ok(serde_json::json!({ "nread": nread }))
-}
-
-async fn op_write(
-  state: Rc<RefCell<OpState>>,
-  args: ResourceId,
-  bufs: BufVec,
-) -> Result<Value, AnyError> {
-  assert_eq!(bufs.len(), 1, "Invalid number of arguments");
-  log::debug!("write rid={}", args.rid);
-
-  let stream = state
-    .borrow()
-    .resource_table
-    .get::<TcpStream>(args.rid)
-    .ok_or_else(bad_resource_id)?;
-  let nwritten = stream.write(&bufs[0]).await?;
-  Ok(serde_json::json!({ "nwritten": nwritten }))
+  Ok(rid)
 }
 
 fn main() {
@@ -224,12 +186,12 @@ fn main() {
 
   let future = async move {
     js_runtime
-      .execute(
+      .execute_script(
         "http_bench_json_ops.js",
         include_str!("http_bench_json_ops.js"),
       )
       .unwrap();
-    js_runtime.run_event_loop().await
+    js_runtime.run_event_loop(false).await
   };
   runtime.block_on(future).unwrap();
 }

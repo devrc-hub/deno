@@ -1,17 +1,21 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 
 // Contains types that can be used to validate and check `99_main_compiler.js`
 
 import * as _ts from "../dts/typescript";
 
 declare global {
-  // deno-lint-ignore no-namespace
   namespace ts {
     var libs: string[];
     var libMap: Map<string, string>;
-
+    var base64encode: (host: ts.CompilerHost, input: string) => string;
+    var normalizePath: (path: string) => string;
     interface SourceFile {
       version?: string;
+    }
+
+    interface CompilerHost {
+      base64encode?: (data: any) => string;
     }
 
     interface Performance {
@@ -22,7 +26,6 @@ declare global {
     var performance: Performance;
   }
 
-  // deno-lint-ignore no-namespace
   namespace ts {
     export = _ts;
   }
@@ -33,10 +36,12 @@ declare global {
   }
 
   interface DenoCore {
+    encode(value: string): Uint8Array;
     // deno-lint-ignore no-explicit-any
-    jsonOpSync<T>(name: string, params: T): any;
-    ops(): void;
-    print(msg: string, code?: number): void;
+    opSync<T>(name: string, params: T): any;
+    // deno-lint-ignore no-explicit-any
+    ops: Record<string, (...args: unknown[]) => any>;
+    print(msg: string, stderr: boolean): void;
     registerErrorClass(
       name: string,
       Ctor: typeof Error,
@@ -46,9 +51,12 @@ declare global {
   }
 
   type LanguageServerRequest =
+    | Restart
     | ConfigureRequest
     | FindRenameLocationsRequest
-    | GetAsset
+    | GetAssets
+    | GetApplicableRefactors
+    | GetEditsForRefactor
     | GetCodeFixes
     | GetCombinedCodeFix
     | GetCompletionDetails
@@ -56,13 +64,20 @@ declare global {
     | GetDefinitionRequest
     | GetDiagnosticsRequest
     | GetDocumentHighlightsRequest
+    | GetEncodedSemanticClassifications
     | GetImplementationRequest
+    | GetNavigateToItems
     | GetNavigationTree
+    | GetOutliningSpans
     | GetQuickInfoRequest
     | GetReferencesRequest
     | GetSignatureHelpItemsRequest
     | GetSmartSelectionRange
-    | GetSupportedCodeFixes;
+    | GetSupportedCodeFixes
+    | GetTypeDefinitionRequest
+    | PrepareCallHierarchy
+    | ProvideCallHierarchyIncomingCalls
+    | ProvideCallHierarchyOutgoingCalls;
 
   interface BaseLanguageServerRequest {
     id: number;
@@ -84,9 +99,23 @@ declare global {
     providePrefixAndSuffixTextForRename: boolean;
   }
 
-  interface GetAsset extends BaseLanguageServerRequest {
-    method: "getAsset";
+  interface GetAssets extends BaseLanguageServerRequest {
+    method: "getAssets";
+  }
+
+  interface GetApplicableRefactors extends BaseLanguageServerRequest {
+    method: "getApplicableRefactors";
     specifier: string;
+    range: ts.TextRange;
+    kind: string;
+  }
+
+  interface GetEditsForRefactor extends BaseLanguageServerRequest {
+    method: "getEditsForRefactor";
+    specifier: string;
+    range: ts.TextRange;
+    refactorName: string;
+    actionName: string;
   }
 
   interface GetCodeFixes extends BaseLanguageServerRequest {
@@ -111,7 +140,8 @@ declare global {
       position: number;
       name: string;
       source?: string;
-      data?: unknown;
+      preferences?: ts.UserPreferences;
+      data?: ts.CompletionEntryData;
     };
   }
 
@@ -140,14 +170,33 @@ declare global {
     filesToSearch: string[];
   }
 
+  interface GetEncodedSemanticClassifications
+    extends BaseLanguageServerRequest {
+    method: "getEncodedSemanticClassifications";
+    specifier: string;
+    span: ts.TextSpan;
+  }
+
   interface GetImplementationRequest extends BaseLanguageServerRequest {
     method: "getImplementation";
     specifier: string;
     position: number;
   }
 
+  interface GetNavigateToItems extends BaseLanguageServerRequest {
+    method: "getNavigateToItems";
+    search: string;
+    maxResultCount?: number;
+    fileName?: string;
+  }
+
   interface GetNavigationTree extends BaseLanguageServerRequest {
     method: "getNavigationTree";
+    specifier: string;
+  }
+
+  interface GetOutliningSpans extends BaseLanguageServerRequest {
+    method: "getOutliningSpans";
     specifier: string;
   }
 
@@ -178,5 +227,35 @@ declare global {
 
   interface GetSupportedCodeFixes extends BaseLanguageServerRequest {
     method: "getSupportedCodeFixes";
+  }
+
+  interface GetTypeDefinitionRequest extends BaseLanguageServerRequest {
+    method: "getTypeDefinition";
+    specifier: string;
+    position: number;
+  }
+
+  interface PrepareCallHierarchy extends BaseLanguageServerRequest {
+    method: "prepareCallHierarchy";
+    specifier: string;
+    position: number;
+  }
+
+  interface ProvideCallHierarchyIncomingCalls
+    extends BaseLanguageServerRequest {
+    method: "provideCallHierarchyIncomingCalls";
+    specifier: string;
+    position: number;
+  }
+
+  interface ProvideCallHierarchyOutgoingCalls
+    extends BaseLanguageServerRequest {
+    method: "provideCallHierarchyOutgoingCalls";
+    specifier: string;
+    position: number;
+  }
+
+  interface Restart extends BaseLanguageServerRequest {
+    method: "restart";
   }
 }

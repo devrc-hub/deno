@@ -1,4 +1,4 @@
-import { assert, assertEquals, unitTest } from "./test_util.ts";
+import { assert, assertEquals } from "./test_util.ts";
 
 let isCI: boolean;
 try {
@@ -7,11 +7,16 @@ try {
   isCI = true;
 }
 
-// Skip this test on linux CI, because the vulkan emulator is not good enough
-// yet, and skip on macOS because these do not have virtual GPUs.
-unitTest({
-  perms: { read: true, env: true },
-  ignore: (Deno.build.os === "linux" || Deno.build.os === "darwin") && isCI,
+// Skip these tests on linux CI, because the vulkan emulator is not good enough
+// yet, and skip on macOS CI because these do not have virtual GPUs.
+const isLinuxOrMacCI =
+  (Deno.build.os === "linux" || Deno.build.os === "darwin") && isCI;
+// Skip these tests in WSL because it doesn't have good GPU support.
+const isWsl = await checkIsWsl();
+
+Deno.test({
+  permissions: { read: true, env: true },
+  ignore: isWsl || isLinuxOrMacCI,
 }, async function webgpuComputePass() {
   const adapter = await navigator.gpu.requestAdapter();
   assert(adapter);
@@ -22,7 +27,7 @@ unitTest({
   assert(device);
 
   const shaderCode = await Deno.readTextFile(
-    "cli/tests/webgpu_computepass_shader.wgsl",
+    "cli/tests/testdata/webgpu_computepass_shader.wgsl",
   );
 
   const shaderModule = device.createShaderModule({
@@ -33,13 +38,14 @@ unitTest({
 
   const stagingBuffer = device.createBuffer({
     size: size,
-    usage: 1 | 8,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
   });
 
   const storageBuffer = device.createBuffer({
     label: "Storage Buffer",
     size: size,
-    usage: 0x80 | 8 | 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST |
+      GPUBufferUsage.COPY_SRC,
     mappedAtCreation: true,
   });
 
@@ -49,18 +55,14 @@ unitTest({
 
   storageBuffer.unmap();
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: 4,
-        buffer: {
-          type: "storage",
-          minBindingSize: 4,
-        },
-      },
-    ],
+  const computePipeline = device.createComputePipeline({
+    layout: "auto",
+    compute: {
+      module: shaderModule,
+      entryPoint: "main",
+    },
   });
+  const bindGroupLayout = computePipeline.getBindGroupLayout(0);
 
   const bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
@@ -74,26 +76,14 @@ unitTest({
     ],
   });
 
-  const pipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [bindGroupLayout],
-  });
-
-  const computePipeline = device.createComputePipeline({
-    layout: pipelineLayout,
-    compute: {
-      module: shaderModule,
-      entryPoint: "main",
-    },
-  });
-
   const encoder = device.createCommandEncoder();
 
   const computePass = encoder.beginComputePass();
   computePass.setPipeline(computePipeline);
   computePass.setBindGroup(0, bindGroup);
   computePass.insertDebugMarker("compute collatz iterations");
-  computePass.dispatch(numbers.length);
-  computePass.endPass();
+  computePass.dispatchWorkgroups(numbers.length);
+  computePass.end();
 
   encoder.copyBufferToBuffer(storageBuffer, 0, stagingBuffer, 0, size);
 
@@ -115,11 +105,9 @@ unitTest({
   Deno.close(Number(resources[resources.length - 1]));
 });
 
-// Skip this test on linux CI, because the vulkan emulator is not good enough
-// yet, and skip on macOS because these do not have virtual GPUs.
-unitTest({
-  perms: { read: true, env: true },
-  ignore: (Deno.build.os === "linux" || Deno.build.os === "darwin") && isCI,
+Deno.test({
+  permissions: { read: true, env: true },
+  ignore: isWsl || isLinuxOrMacCI,
 }, async function webgpuHelloTriangle() {
   const adapter = await navigator.gpu.requestAdapter();
   assert(adapter);
@@ -128,7 +116,7 @@ unitTest({
   assert(device);
 
   const shaderCode = await Deno.readTextFile(
-    "cli/tests/webgpu_hellotriangle_shader.wgsl",
+    "cli/tests/testdata/webgpu_hellotriangle_shader.wgsl",
   );
 
   const shaderModule = device.createShaderModule({
@@ -179,18 +167,20 @@ unitTest({
   });
 
   const encoder = device.createCommandEncoder();
+  const view = texture.createView();
   const renderPass = encoder.beginRenderPass({
     colorAttachments: [
       {
-        view: texture.createView(),
+        view,
         storeOp: "store",
-        loadValue: [0, 1, 0, 1],
+        loadOp: "clear",
+        clearValue: [0, 1, 0, 1],
       },
     ],
   });
   renderPass.setPipeline(renderPipeline);
   renderPass.draw(3, 1);
-  renderPass.endPass();
+  renderPass.end();
 
   encoder.copyTextureToBuffer(
     {
@@ -204,12 +194,16 @@ unitTest({
     dimensions,
   );
 
-  device.queue.submit([encoder.finish()]);
+  const bundle = encoder.finish();
+  device.queue.submit([bundle]);
 
   await outputBuffer.mapAsync(1);
   const data = new Uint8Array(outputBuffer.getMappedRange());
 
-  assertEquals(data, await Deno.readFile("cli/tests/webgpu_hellotriangle.out"));
+  assertEquals(
+    data,
+    await Deno.readFile("cli/tests/testdata/webgpu_hellotriangle.out"),
+  );
 
   outputBuffer.unmap();
 
@@ -220,3 +214,17 @@ unitTest({
   const resources = Object.keys(Deno.resources());
   Deno.close(Number(resources[resources.length - 1]));
 });
+
+async function checkIsWsl() {
+  return Deno.build.os === "linux" && await hasMicrosoftProcVersion();
+
+  async function hasMicrosoftProcVersion() {
+    // https://github.com/microsoft/WSL/issues/423#issuecomment-221627364
+    try {
+      const procVersion = await Deno.readTextFile("/proc/version");
+      return /microsoft/i.test(procVersion);
+    } catch {
+      return false;
+    }
+  }
+}

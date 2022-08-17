@@ -1,39 +1,24 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 "use strict";
 ((window) => {
-  const { stat, statSync, chmod, chmodSync } = window.__bootstrap.fs;
-  const { open, openSync } = window.__bootstrap.files;
-  const { writeAll, writeAllSync } = window.__bootstrap.buffer;
-  const { build } = window.__bootstrap.build;
+  const core = window.__bootstrap.core;
+  const ops = core.ops;
+  const { abortSignal } = window.__bootstrap;
+  const { pathFromURL } = window.__bootstrap.util;
 
   function writeFileSync(
     path,
     data,
     options = {},
   ) {
-    if (options.create !== undefined) {
-      const create = !!options.create;
-      if (!create) {
-        // verify that file exists
-        statSync(path);
-      }
-    }
-
-    const openOptions = options.append
-      ? { write: true, create: true, append: true }
-      : { write: true, create: true, truncate: true };
-    const file = openSync(path, openOptions);
-
-    if (
-      options.mode !== undefined &&
-      options.mode !== null &&
-      build.os !== "windows"
-    ) {
-      chmodSync(path, options.mode);
-    }
-
-    writeAllSync(file, data);
-    file.close();
+    options.signal?.throwIfAborted();
+    ops.op_write_file_sync({
+      path: pathFromURL(path),
+      data,
+      mode: options.mode,
+      append: options.append ?? false,
+      create: options.create ?? true,
+    });
   }
 
   async function writeFile(
@@ -41,29 +26,31 @@
     data,
     options = {},
   ) {
-    if (options.create !== undefined) {
-      const create = !!options.create;
-      if (!create) {
-        // verify that file exists
-        await stat(path);
+    let cancelRid;
+    let abortHandler;
+    if (options.signal) {
+      options.signal.throwIfAborted();
+      cancelRid = ops.op_cancel_handle();
+      abortHandler = () => core.tryClose(cancelRid);
+      options.signal[abortSignal.add](abortHandler);
+    }
+    try {
+      await core.opAsync("op_write_file_async", {
+        path: pathFromURL(path),
+        data,
+        mode: options.mode,
+        append: options.append ?? false,
+        create: options.create ?? true,
+        cancelRid,
+      });
+    } finally {
+      if (options.signal) {
+        options.signal[abortSignal.remove](abortHandler);
+
+        // always throw the abort error when aborted
+        options.signal.throwIfAborted();
       }
     }
-
-    const openOptions = options.append
-      ? { write: true, create: true, append: true }
-      : { write: true, create: true, truncate: true };
-    const file = await open(path, openOptions);
-
-    if (
-      options.mode !== undefined &&
-      options.mode !== null &&
-      build.os !== "windows"
-    ) {
-      await chmod(path, options.mode);
-    }
-
-    await writeAll(file, data);
-    file.close();
   }
 
   function writeTextFileSync(

@@ -1,14 +1,14 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 import {
   assertEquals,
+  assertRejects,
   assertThrows,
-  assertThrowsAsync,
-  unitTest,
+  pathToAbsoluteFileUrl,
 } from "./test_util.ts";
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function futimeSyncSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function futimeSyncSuccess() {
     const testDir = await Deno.makeTempDir();
     const filename = testDir + "/file.txt";
     const file = await Deno.open(filename, {
@@ -28,9 +28,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function futimeSyncSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function futimeSyncSuccess() {
     const testDir = Deno.makeTempDirSync();
     const filename = testDir + "/file.txt";
     const file = Deno.openSync(filename, {
@@ -50,9 +50,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function utimeSyncFileSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function utimeSyncFileSuccess() {
     const testDir = Deno.makeTempDirSync();
     const filename = testDir + "/file.txt";
     Deno.writeFileSync(filename, new TextEncoder().encode("hello"), {
@@ -69,9 +69,28 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function utimeSyncDirectorySuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function utimeSyncUrlSuccess() {
+    const testDir = Deno.makeTempDirSync();
+    const filename = testDir + "/file.txt";
+    Deno.writeFileSync(filename, new TextEncoder().encode("hello"), {
+      mode: 0o666,
+    });
+
+    const atime = 1000;
+    const mtime = 50000;
+    Deno.utimeSync(pathToAbsoluteFileUrl(filename), atime, mtime);
+
+    const fileInfo = Deno.statSync(filename);
+    assertEquals(fileInfo.atime, new Date(atime * 1000));
+    assertEquals(fileInfo.mtime, new Date(mtime * 1000));
+  },
+);
+
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function utimeSyncDirectorySuccess() {
     const testDir = Deno.makeTempDirSync();
 
     const atime = 1000;
@@ -84,9 +103,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function utimeSyncDateSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function utimeSyncDateSuccess() {
     const testDir = Deno.makeTempDirSync();
 
     const atime = new Date(1000_000);
@@ -99,8 +118,8 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
+Deno.test(
+  { permissions: { read: true, write: true } },
   function utimeSyncFileDateSuccess() {
     const testDir = Deno.makeTempDirSync();
     const filename = testDir + "/file.txt";
@@ -117,9 +136,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function utimeSyncLargeNumberSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function utimeSyncLargeNumberSuccess() {
     const testDir = Deno.makeTempDirSync();
 
     // There are Rust side caps (might be fs relate),
@@ -134,21 +153,25 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function utimeSyncNotFound(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function utimeSyncNotFound() {
     const atime = 1000;
     const mtime = 50000;
 
-    assertThrows(() => {
-      Deno.utimeSync("/baddir", atime, mtime);
-    }, Deno.errors.NotFound);
+    assertThrows(
+      () => {
+        Deno.utimeSync("/baddir", atime, mtime);
+      },
+      Deno.errors.NotFound,
+      "utime '/baddir'",
+    );
   },
 );
 
-unitTest(
-  { perms: { read: true, write: false } },
-  function utimeSyncPerm(): void {
+Deno.test(
+  { permissions: { read: true, write: false } },
+  function utimeSyncPerm() {
     const atime = 1000;
     const mtime = 50000;
 
@@ -158,9 +181,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function utimeFileSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function utimeFileSuccess() {
     const testDir = Deno.makeTempDirSync();
     const filename = testDir + "/file.txt";
     Deno.writeFileSync(filename, new TextEncoder().encode("hello"), {
@@ -177,9 +200,28 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function utimeDirectorySuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function utimeUrlSuccess() {
+    const testDir = Deno.makeTempDirSync();
+    const filename = testDir + "/file.txt";
+    Deno.writeFileSync(filename, new TextEncoder().encode("hello"), {
+      mode: 0o666,
+    });
+
+    const atime = 1000;
+    const mtime = 50000;
+    await Deno.utime(pathToAbsoluteFileUrl(filename), atime, mtime);
+
+    const fileInfo = Deno.statSync(filename);
+    assertEquals(fileInfo.atime, new Date(atime * 1000));
+    assertEquals(fileInfo.mtime, new Date(mtime * 1000));
+  },
+);
+
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function utimeDirectorySuccess() {
     const testDir = Deno.makeTempDirSync();
 
     const atime = 1000;
@@ -192,9 +234,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function utimeDateSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function utimeDateSuccess() {
     const testDir = Deno.makeTempDirSync();
 
     const atime = new Date(100_000);
@@ -207,9 +249,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function utimeFileDateSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function utimeFileDateSuccess() {
     const testDir = Deno.makeTempDirSync();
     const filename = testDir + "/file.txt";
     Deno.writeFileSync(filename, new TextEncoder().encode("hello"), {
@@ -226,25 +268,29 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function utimeNotFound(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function utimeNotFound() {
     const atime = 1000;
     const mtime = 50000;
 
-    await assertThrowsAsync(async () => {
-      await Deno.utime("/baddir", atime, mtime);
-    }, Deno.errors.NotFound);
+    await assertRejects(
+      async () => {
+        await Deno.utime("/baddir", atime, mtime);
+      },
+      Deno.errors.NotFound,
+      "utime '/baddir'",
+    );
   },
 );
 
-unitTest(
-  { perms: { read: true, write: false } },
-  async function utimeSyncPerm(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: false } },
+  async function utimeSyncPerm() {
     const atime = 1000;
     const mtime = 50000;
 
-    await assertThrowsAsync(async () => {
+    await assertRejects(async () => {
       await Deno.utime("/some_dir", atime, mtime);
     }, Deno.errors.PermissionDenied);
   },

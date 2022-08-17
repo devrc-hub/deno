@@ -1,26 +1,22 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 
 use deno_core::error::custom_error;
 use deno_core::error::AnyError;
-use deno_core::serde_json::json;
-use deno_core::serde_json::Value;
 use dissimilar::diff;
 use dissimilar::Chunk;
-use lspower::jsonrpc;
-use lspower::lsp;
-use lspower::lsp::TextEdit;
 use std::collections::HashMap;
-use std::ops::Bound;
-use std::ops::RangeBounds;
 use text_size::TextRange;
 use text_size::TextSize;
+use tower_lsp::jsonrpc;
+use tower_lsp::lsp_types as lsp;
+use tower_lsp::lsp_types::TextEdit;
 
 fn partition_point<T, P>(slice: &[T], mut predicate: P) -> usize
 where
   P: FnMut(&T) -> bool,
 {
   let mut left = 0;
-  let mut right = slice.len();
+  let mut right = slice.len() - 1;
 
   while left != right {
     let mid = left + (right - left) / 2;
@@ -31,7 +27,7 @@ where
     // In both cases left <= right is satisfied.
     // Therefore if left < right in a step,
     // left <= right is satisfied in the next step.
-    // Therefore as long as left != right, 0 <= left < right <= len is satisfied
+    // Therefore as long as left != right, 0 <= left < right < len is satisfied
     // and if this case 0 <= mid < len is satisfied too.
     let value = unsafe { slice.get_unchecked(mid) };
     if predicate(value) {
@@ -109,6 +105,10 @@ impl LineIndex {
       curr_col += c_len;
     }
 
+    // utf8_offsets and utf16_offsets length is equal to (# of lines + 1)
+    utf8_offsets.push(curr_row);
+    utf16_offsets.push(curr_offset_u16);
+
     if !utf16_chars.is_empty() {
       utf16_lines.insert(line, utf16_chars);
     }
@@ -185,6 +185,10 @@ impl LineIndex {
     }
   }
 
+  pub fn text_content_length_utf16(&self) -> TextSize {
+    *self.utf16_offsets.last().unwrap()
+  }
+
   fn utf16_to_utf8_col(&self, line: u32, mut col: u32) -> TextSize {
     if let Some(utf16_chars) = self.utf16_lines.get(&line) {
       for c in utf16_chars {
@@ -202,21 +206,12 @@ impl LineIndex {
 
 /// Compare two strings and return a vector of text edit records which are
 /// supported by the Language Server Protocol.
-pub fn get_edits(
-  a: &str,
-  b: &str,
-  maybe_line_index: Option<LineIndex>,
-) -> Vec<TextEdit> {
+pub fn get_edits(a: &str, b: &str, line_index: &LineIndex) -> Vec<TextEdit> {
   if a == b {
     return vec![];
   }
   let chunks = diff(a, b);
   let mut text_edits = Vec::<TextEdit>::new();
-  let line_index = if let Some(line_index) = maybe_line_index {
-    line_index
-  } else {
-    LineIndex::new(a)
-  };
   let mut iter = chunks.iter().peekable();
   let mut a_pos = TextSize::from(0);
   loop {
@@ -260,112 +255,6 @@ pub fn get_edits(
   }
 
   text_edits
-}
-
-/// Convert a difference between two strings into a change range used by the
-/// TypeScript Language Service.
-pub fn get_range_change(a: &str, b: &str) -> Value {
-  if a == b {
-    return json!(null);
-  }
-  let chunks = diff(a, b);
-  let mut iter = chunks.iter().peekable();
-  let mut started = false;
-  let mut start = 0;
-  let mut end = 0;
-  let mut new_length = 0;
-  let mut equal = 0;
-  let mut a_pos = 0;
-  loop {
-    let diff = iter.next();
-    match diff {
-      None => break,
-      Some(Chunk::Equal(e)) => {
-        a_pos += e.encode_utf16().count();
-        equal += e.encode_utf16().count();
-      }
-      Some(Chunk::Delete(d)) => {
-        if !started {
-          start = a_pos;
-          started = true;
-          equal = 0;
-        }
-        a_pos += d.encode_utf16().count();
-        if started {
-          end = a_pos;
-          new_length += equal;
-          equal = 0;
-        }
-      }
-      Some(Chunk::Insert(i)) => {
-        if !started {
-          start = a_pos;
-          end = a_pos;
-          started = true;
-          equal = 0;
-        } else {
-          end += equal;
-        }
-        new_length += i.encode_utf16().count() + equal;
-        equal = 0;
-      }
-    }
-  }
-
-  json!({
-    "span": {
-      "start": start,
-      "length": end - start,
-    },
-    "newLength": new_length,
-  })
-}
-
-/// Provide a slice of a string based on a character range.
-pub fn slice(s: &str, range: impl RangeBounds<usize>) -> &str {
-  let start = match range.start_bound() {
-    Bound::Included(bound) | Bound::Excluded(bound) => *bound,
-    Bound::Unbounded => 0,
-  };
-  let len = match range.end_bound() {
-    Bound::Included(bound) => *bound + 1,
-    Bound::Excluded(bound) => *bound,
-    Bound::Unbounded => s.encode_utf16().count(),
-  } - start;
-  substring(s, start, start + len)
-}
-
-/// Provide a substring based on the start and end character index positions.
-pub fn substring(s: &str, start: usize, end: usize) -> &str {
-  let len = end - start;
-  let mut char_pos = 0;
-  let mut byte_start = 0;
-  let mut it = s.chars();
-  loop {
-    if char_pos == start {
-      break;
-    }
-    if let Some(c) = it.next() {
-      char_pos += c.len_utf16();
-      byte_start += c.len_utf8();
-    } else {
-      break;
-    }
-  }
-  char_pos = 0;
-  let mut byte_end = byte_start;
-  loop {
-    if char_pos == len {
-      break;
-    }
-    if let Some(c) = it.next() {
-      char_pos += c.len_utf16();
-      byte_end += c.len_utf8();
-    } else {
-      break;
-    }
-  }
-  &s[byte_start..byte_end]
 }
 
 #[cfg(test)]
@@ -567,7 +456,7 @@ const C: char = \"メ メ\";
   fn test_get_edits() {
     let a = "abcdefg";
     let b = "a\nb\nchije\nfg\n";
-    let actual = get_edits(a, b, None);
+    let actual = get_edits(a, b, &LineIndex::new(a));
     assert_eq!(
       actual,
       vec![
@@ -605,7 +494,7 @@ const C: char = \"メ メ\";
   fn test_get_edits_mbc() {
     let a = "const bar = \"👍🇺🇸😃\";\nconsole.log('hello deno')\n";
     let b = "const bar = \"👍🇺🇸😃\";\nconsole.log(\"hello deno\");\n";
-    let actual = get_edits(a, b, None);
+    let actual = get_edits(a, b, &LineIndex::new(a));
     assert_eq!(
       actual,
       vec![
@@ -637,156 +526,5 @@ const C: char = \"メ メ\";
         },
       ]
     )
-  }
-
-  #[test]
-  fn test_get_range_change() {
-    let a = "abcdefg";
-    let b = "abcdefg";
-    let actual = get_range_change(a, b);
-    assert_eq!(actual, json!(null));
-
-    let a = "abcdefg";
-    let b = "abedcfg";
-    let actual = get_range_change(a, b);
-    assert_eq!(
-      actual,
-      json!({
-        "span": {
-          "start": 2,
-          "length": 3,
-        },
-        "newLength": 3
-      })
-    );
-
-    let a = "abfg";
-    let b = "abcdefg";
-    let actual = get_range_change(a, b);
-    assert_eq!(
-      actual,
-      json!({
-        "span": {
-          "start": 2,
-          "length": 0,
-        },
-        "newLength": 3
-      })
-    );
-
-    let a = "abcdefg";
-    let b = "abfg";
-    let actual = get_range_change(a, b);
-    assert_eq!(
-      actual,
-      json!({
-        "span": {
-          "start": 2,
-          "length": 3,
-        },
-        "newLength": 0
-      })
-    );
-
-    let a = "abcdefg";
-    let b = "abfghij";
-    let actual = get_range_change(a, b);
-    assert_eq!(
-      actual,
-      json!({
-        "span": {
-          "start": 2,
-          "length": 5,
-        },
-        "newLength": 5
-      })
-    );
-
-    let a = "abcdefghijk";
-    let b = "axcxexfxixk";
-    let actual = get_range_change(a, b);
-    assert_eq!(
-      actual,
-      json!({
-        "span": {
-          "start": 1,
-          "length": 9,
-        },
-        "newLength": 9
-      })
-    );
-
-    let a = "abcde";
-    let b = "ab(c)de";
-    let actual = get_range_change(a, b);
-    assert_eq!(
-      actual,
-      json!({
-        "span" : {
-          "start": 2,
-          "length": 1,
-        },
-        "newLength": 3
-      })
-    );
-
-    let a = "hello 🦕!";
-    let b = "hello deno!";
-    let actual = get_range_change(a, b);
-    assert_eq!(
-      actual,
-      json!({
-        "span": {
-          "start": 6,
-          "length": 2,
-        },
-        "newLength": 4
-      })
-    );
-
-    let a = "hello deno!";
-    let b = "hello deno🦕!";
-    let actual = get_range_change(a, b);
-    assert_eq!(
-      actual,
-      json!({
-        "span": {
-          "start": 10,
-          "length": 0,
-        },
-        "newLength": 2
-      })
-    );
-
-    // TODO(@kitsonk): https://github.com/dtolnay/dissimilar/issues/5
-    // let a = r#" 🦕🇺🇸👍 "#;
-    // let b = r#" 🇺🇸👍 "#;
-    // let actual = get_range_change(a, b);
-    // assert_eq!(
-    //   actual,
-    //   json!({
-    //     "span": {
-    //       "start": 1,
-    //       "length": 2,
-    //     },
-    //     "newLength": 0
-    //   })
-    // );
-  }
-
-  #[test]
-  fn test_substring() {
-    assert_eq!(substring("Deno", 1, 3), "en");
-    assert_eq!(substring("y̆y̆", 2, 4), "y̆");
-    assert_eq!(substring("🦕🦕", 2, 4), "🦕");
-  }
-
-  #[test]
-  fn test_slice() {
-    assert_eq!(slice("Deno", 1..3), "en");
-    assert_eq!(slice("Deno", 1..=3), "eno");
-    assert_eq!(slice("Deno Land", 1..), "eno Land");
-    assert_eq!(slice("Deno", ..3), "Den");
-    assert_eq!(slice("Hello 🦕", 6..8), "🦕");
   }
 }

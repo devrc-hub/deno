@@ -1,14 +1,9 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
-import {
-  assertEquals,
-  assertThrows,
-  assertThrowsAsync,
-  unitTest,
-} from "./test_util.ts";
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
+import { assertEquals, assertRejects, assertThrows } from "./test_util.ts";
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function ftruncateSyncSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function ftruncateSyncSuccess() {
     const filename = Deno.makeTempDirSync() + "/test_ftruncateSync.txt";
     const file = Deno.openSync(filename, {
       create: true,
@@ -28,9 +23,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function ftruncateSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function ftruncateSuccess() {
     const filename = Deno.makeTempDirSync() + "/test_ftruncate.txt";
     const file = await Deno.open(filename, {
       create: true,
@@ -50,9 +45,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function truncateSyncSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function truncateSyncSuccess() {
     const filename = Deno.makeTempDirSync() + "/test_truncateSync.txt";
     Deno.writeFileSync(filename, new Uint8Array(5));
     Deno.truncateSync(filename, 20);
@@ -65,9 +60,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function truncateSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function truncateSuccess() {
     const filename = Deno.makeTempDirSync() + "/test_truncate.txt";
     await Deno.writeFile(filename, new Uint8Array(5));
     await Deno.truncate(filename, 20);
@@ -80,16 +75,42 @@ unitTest(
   },
 );
 
-unitTest({ perms: { write: false } }, function truncateSyncPerm(): void {
+Deno.test({ permissions: { write: false } }, function truncateSyncPerm() {
   assertThrows(() => {
     Deno.truncateSync("/test_truncateSyncPermission.txt");
   }, Deno.errors.PermissionDenied);
 });
 
-unitTest({ perms: { write: false } }, async function truncatePerm(): Promise<
-  void
-> {
-  await assertThrowsAsync(async () => {
+Deno.test({ permissions: { write: false } }, async function truncatePerm() {
+  await assertRejects(async () => {
     await Deno.truncate("/test_truncatePermission.txt");
   }, Deno.errors.PermissionDenied);
 });
+
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function truncateSyncNotFound() {
+    const filename = "/badfile.txt";
+    assertThrows(
+      () => {
+        Deno.truncateSync(filename);
+      },
+      Deno.errors.NotFound,
+      `truncate '${filename}'`,
+    );
+  },
+);
+
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function truncateSyncNotFound() {
+    const filename = "/badfile.txt";
+    await assertRejects(
+      async () => {
+        await Deno.truncate(filename);
+      },
+      Deno.errors.NotFound,
+      `truncate '${filename}'`,
+    );
+  },
+);

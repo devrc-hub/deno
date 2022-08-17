@@ -1,9 +1,9 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
-import { assertEquals, unitTest } from "./test_util.ts";
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
+import { assertEquals } from "./test_util.ts";
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function fdatasyncSyncSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function fdatasyncSyncSuccess() {
     const filename = Deno.makeTempDirSync() + "/test_fdatasyncSync.txt";
     const file = Deno.openSync(filename, {
       read: true,
@@ -19,9 +19,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function fdatasyncSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function fdatasyncSuccess() {
     const filename = (await Deno.makeTempDir()) + "/test_fdatasync.txt";
     const file = await Deno.open(filename, {
       read: true,
@@ -37,9 +37,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  function fsyncSyncSuccess(): void {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  function fsyncSyncSuccess() {
     const filename = Deno.makeTempDirSync() + "/test_fsyncSync.txt";
     const file = Deno.openSync(filename, {
       read: true,
@@ -55,9 +55,9 @@ unitTest(
   },
 );
 
-unitTest(
-  { perms: { read: true, write: true } },
-  async function fsyncSuccess(): Promise<void> {
+Deno.test(
+  { permissions: { read: true, write: true } },
+  async function fsyncSuccess() {
     const filename = (await Deno.makeTempDir()) + "/test_fsync.txt";
     const file = await Deno.open(filename, {
       read: true,

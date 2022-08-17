@@ -16,15 +16,16 @@ keeps track of all pending tasks (async ops, dynamic module loads). It is user's
 responsibility to drive that loop by using `JsRuntime::run_event_loop` method -
 it must be executed in the context of Rust's future executor (eg. tokio, smol).
 
-In order to bind Rust functions into JavaScript, use the `Deno.core.dispatch()`
-function to trigger the "dispatch" callback in Rust. The user is responsible for
-encoding both the request and response into a Uint8Array.
+Rust functions can be registered in JavaScript using `deno_core::Extension`. Use
+the `Deno.core.opSync()` and `Deno.core.opAsync()` functions to trigger the op
+function callback. A conventional way to write ops is using the
+[`deno_ops`](https://github.com/denoland/deno/blob/main/ops) crate.
 
 Documentation for this crate is thin at the moment. Please see
-[http_bench_bin_ops.rs](https://github.com/denoland/deno/blob/main/core/examples/http_bench_bin_ops.rs)
+[hello_world.rs](https://github.com/denoland/deno/blob/main/core/examples/hello_world.rs)
 and
 [http_bench_json_ops.rs](https://github.com/denoland/deno/blob/main/core/examples/http_bench_json_ops.rs)
-as a simple example of usage.
+as examples of usage.
 
-TypeScript support and a lot of other functionality is not available at this
+TypeScript support and lots of other functionality are not available at this
 layer. See the [CLI](https://github.com/denoland/deno/tree/main/cli) for that.

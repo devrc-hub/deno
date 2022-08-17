@@ -1,11 +1,11 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
-import { assertEquals, unitTest } from "./test_util.ts";
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
+import { assertEquals } from "./test_util.ts";
 
-unitTest(
+Deno.test(
   {
     ignore: Deno.build.os === "windows",
   },
-  function umaskSuccess(): void {
+  function umaskSuccess() {
     const prevMask = Deno.umask(0o020);
     const newMask = Deno.umask(prevMask);
     const finalMask = Deno.umask();

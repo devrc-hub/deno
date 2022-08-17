@@ -1,6 +1,4 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
-use rusty_v8 as v8;
-
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -11,7 +9,7 @@ struct MathOp {
 }
 
 fn main() {
-  let platform = v8::new_default_platform().unwrap();
+  let platform = v8::new_default_platform(0, false).make_shared();
   v8::V8::initialize_platform(platform);
   v8::V8::initialize();
 
@@ -36,7 +34,10 @@ fn main() {
 
     let v = exec(scope, "({a: 1, b: 3, c: 'ignored'})");
     let mop: MathOp = serde_v8::from_v8(scope, v).unwrap();
-    println!("mop = {:?}", mop);
+    println!(
+      "mop = {{ a: {}, b: {}, operator: {:?} }}",
+      mop.a, mop.b, mop.operator
+    );
 
     let v = exec(scope, "[1,2,3,4,5]");
     let arr: Vec<u64> = serde_v8::from_v8(scope, v).unwrap();
@@ -51,8 +52,10 @@ fn main() {
     println!("x = {}", x);
   }
 
+  // SAFETY: all isolates have been destroyed, so we can now safely let V8 clean
+  // up its resources.
   unsafe {
     v8::V8::dispose();
   }
-  v8::V8::shutdown_platform();
+  v8::V8::dispose_platform();
 }

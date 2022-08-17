@@ -1,116 +1,305 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 use crate::colors;
-use crate::inspector::DenoInspector;
-use crate::inspector::InspectorServer;
+use crate::inspector_server::InspectorServer;
 use crate::js;
-use crate::metrics::RuntimeMetrics;
 use crate::ops;
+use crate::ops::io::Stdio;
 use crate::permissions::Permissions;
-use crate::tokio_util::create_basic_runtime;
+use crate::tokio_util::run_local;
+use crate::worker::FormatJsErrorFn;
+use crate::BootstrapOptions;
+use deno_broadcast_channel::InMemoryBroadcastChannel;
 use deno_core::error::AnyError;
+use deno_core::error::JsError;
 use deno_core::futures::channel::mpsc;
 use deno_core::futures::future::poll_fn;
-use deno_core::futures::future::FutureExt;
 use deno_core::futures::stream::StreamExt;
 use deno_core::futures::task::AtomicWaker;
-use deno_core::serde_json;
+use deno_core::located_script_name;
+use deno_core::serde::Deserialize;
+use deno_core::serde::Serialize;
 use deno_core::serde_json::json;
-use deno_core::url::Url;
 use deno_core::v8;
+use deno_core::CancelHandle;
+use deno_core::CompiledWasmModuleStore;
+use deno_core::Extension;
 use deno_core::GetErrorClassFn;
-use deno_core::JsErrorCreateFn;
 use deno_core::JsRuntime;
+use deno_core::ModuleId;
 use deno_core::ModuleLoader;
 use deno_core::ModuleSpecifier;
 use deno_core::RuntimeOptions;
+use deno_core::SharedArrayBufferStore;
+use deno_core::SourceMapGetter;
+use deno_tls::rustls::RootCertStore;
+use deno_web::create_entangled_message_port;
+use deno_web::BlobStore;
+use deno_web::MessagePort;
 use log::debug;
-use std::env;
+use std::cell::RefCell;
+use std::fmt;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use tokio::sync::Mutex as AsyncMutex;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebWorkerType {
+  Classic,
+  Module,
+}
+
+#[derive(
+  Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
+pub struct WorkerId(u32);
+impl fmt::Display for WorkerId {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "worker-{}", self.0)
+  }
+}
+impl WorkerId {
+  pub fn next(&self) -> Option<WorkerId> {
+    self.0.checked_add(1).map(WorkerId)
+  }
+}
 
 /// Events that are sent to host from child
 /// worker.
-pub enum WorkerEvent {
-  Message(Box<[u8]>),
+pub enum WorkerControlEvent {
   Error(AnyError),
   TerminalError(AnyError),
+  Close,
 }
 
-pub struct WorkerChannelsInternal {
-  pub sender: mpsc::Sender<WorkerEvent>,
-  pub receiver: mpsc::Receiver<Box<[u8]>>,
-}
+use deno_core::serde::Serializer;
 
-/// Wrapper for `WorkerHandle` that adds functionality
-/// for terminating workers.
-///
-/// This struct is used by host as well as worker itself.
-///
-/// Host uses it to communicate with worker and terminate it,
-/// while worker uses it only to finish execution on `self.close()`.
-#[derive(Clone)]
-pub struct WebWorkerHandle {
-  pub sender: mpsc::Sender<Box<[u8]>>,
-  pub receiver: Arc<AsyncMutex<mpsc::Receiver<WorkerEvent>>>,
-  terminate_tx: mpsc::Sender<()>,
-  terminated: Arc<AtomicBool>,
-  isolate_handle: v8::IsolateHandle,
-}
+impl Serialize for WorkerControlEvent {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    let type_id = match &self {
+      WorkerControlEvent::TerminalError(_) => 1_i32,
+      WorkerControlEvent::Error(_) => 2_i32,
+      WorkerControlEvent::Close => 3_i32,
+    };
 
-impl WebWorkerHandle {
-  /// Post message to worker as a host.
-  pub fn post_message(&self, buf: Box<[u8]>) -> Result<(), AnyError> {
-    let mut sender = self.sender.clone();
-    sender.try_send(buf)?;
-    Ok(())
-  }
+    match self {
+      WorkerControlEvent::TerminalError(error)
+      | WorkerControlEvent::Error(error) => {
+        let value = match error.downcast_ref::<JsError>() {
+          Some(js_error) => {
+            let frame = js_error.frames.iter().find(|f| match &f.file_name {
+              Some(s) => !s.trim_start_matches('[').starts_with("deno:"),
+              None => false,
+            });
+            json!({
+              "message": js_error.exception_message,
+              "fileName": frame.map(|f| f.file_name.as_ref()),
+              "lineNumber": frame.map(|f| f.line_number.as_ref()),
+              "columnNumber": frame.map(|f| f.column_number.as_ref()),
+            })
+          }
+          None => json!({
+            "message": error.to_string(),
+          }),
+        };
 
-  /// Get the event with lock.
-  /// Return error if more than one listener tries to get event
-  pub async fn get_event(&self) -> Result<Option<WorkerEvent>, AnyError> {
-    let mut receiver = self.receiver.try_lock()?;
-    Ok(receiver.next().await)
-  }
-
-  pub fn terminate(&self) {
-    // This function can be called multiple times by whomever holds
-    // the handle. However only a single "termination" should occur so
-    // we need a guard here.
-    let already_terminated = self.terminated.swap(true, Ordering::SeqCst);
-
-    if !already_terminated {
-      self.isolate_handle.terminate_execution();
-      let mut sender = self.terminate_tx.clone();
-      // This call should be infallible hence the `expect`.
-      // This might change in the future.
-      sender.try_send(()).expect("Failed to terminate");
+        Serialize::serialize(&(type_id, value), serializer)
+      }
+      _ => Serialize::serialize(&(type_id, ()), serializer),
     }
   }
 }
 
-fn create_channels(
+// Channels used for communication with worker's parent
+#[derive(Clone)]
+pub struct WebWorkerInternalHandle {
+  sender: mpsc::Sender<WorkerControlEvent>,
+  pub port: Rc<MessagePort>,
+  pub cancel: Rc<CancelHandle>,
+  termination_signal: Arc<AtomicBool>,
+  has_terminated: Arc<AtomicBool>,
+  terminate_waker: Arc<AtomicWaker>,
   isolate_handle: v8::IsolateHandle,
-  terminate_tx: mpsc::Sender<()>,
-) -> (WorkerChannelsInternal, WebWorkerHandle) {
-  let (in_tx, in_rx) = mpsc::channel::<Box<[u8]>>(1);
-  let (out_tx, out_rx) = mpsc::channel::<WorkerEvent>(1);
-  let internal_channels = WorkerChannelsInternal {
-    sender: out_tx,
-    receiver: in_rx,
+  pub name: String,
+  pub worker_type: WebWorkerType,
+}
+
+impl WebWorkerInternalHandle {
+  /// Post WorkerEvent to parent as a worker
+  pub fn post_event(&self, event: WorkerControlEvent) -> Result<(), AnyError> {
+    let mut sender = self.sender.clone();
+    // If the channel is closed,
+    // the worker must have terminated but the termination message has not yet been received.
+    //
+    // Therefore just treat it as if the worker has terminated and return.
+    if sender.is_closed() {
+      self.has_terminated.store(true, Ordering::SeqCst);
+      return Ok(());
+    }
+    sender.try_send(event)?;
+    Ok(())
+  }
+
+  /// Check if this worker is terminated or being terminated
+  pub fn is_terminated(&self) -> bool {
+    self.has_terminated.load(Ordering::SeqCst)
+  }
+
+  /// Check if this worker must terminate (because the termination signal is
+  /// set), and terminates it if so. Returns whether the worker is terminated or
+  /// being terminated, as with [`Self::is_terminated()`].
+  pub fn terminate_if_needed(&mut self) -> bool {
+    let has_terminated = self.is_terminated();
+
+    if !has_terminated && self.termination_signal.load(Ordering::SeqCst) {
+      self.terminate();
+      return true;
+    }
+
+    has_terminated
+  }
+
+  /// Terminate the worker
+  /// This function will set terminated to true, terminate the isolate and close the message channel
+  pub fn terminate(&mut self) {
+    self.cancel.cancel();
+
+    // This function can be called multiple times by whomever holds
+    // the handle. However only a single "termination" should occur so
+    // we need a guard here.
+    let already_terminated = self.has_terminated.swap(true, Ordering::SeqCst);
+
+    if !already_terminated {
+      // Stop javascript execution
+      self.isolate_handle.terminate_execution();
+    }
+
+    // Wake parent by closing the channel
+    self.sender.close_channel();
+  }
+}
+
+pub struct SendableWebWorkerHandle {
+  port: MessagePort,
+  receiver: mpsc::Receiver<WorkerControlEvent>,
+  termination_signal: Arc<AtomicBool>,
+  has_terminated: Arc<AtomicBool>,
+  terminate_waker: Arc<AtomicWaker>,
+  isolate_handle: v8::IsolateHandle,
+}
+
+impl From<SendableWebWorkerHandle> for WebWorkerHandle {
+  fn from(handle: SendableWebWorkerHandle) -> Self {
+    WebWorkerHandle {
+      receiver: Rc::new(RefCell::new(handle.receiver)),
+      port: Rc::new(handle.port),
+      termination_signal: handle.termination_signal,
+      has_terminated: handle.has_terminated,
+      terminate_waker: handle.terminate_waker,
+      isolate_handle: handle.isolate_handle,
+    }
+  }
+}
+
+/// This is the handle to the web worker that the parent thread uses to
+/// communicate with the worker. It is created from a `SendableWebWorkerHandle`
+/// which is sent to the parent thread from the worker thread where it is
+/// created. The reason for this separation is that the handle first needs to be
+/// `Send` when transferring between threads, and then must be `Clone` when it
+/// has arrived on the parent thread. It can not be both at once without large
+/// amounts of Arc<Mutex> and other fun stuff.
+#[derive(Clone)]
+pub struct WebWorkerHandle {
+  pub port: Rc<MessagePort>,
+  receiver: Rc<RefCell<mpsc::Receiver<WorkerControlEvent>>>,
+  termination_signal: Arc<AtomicBool>,
+  has_terminated: Arc<AtomicBool>,
+  terminate_waker: Arc<AtomicWaker>,
+  isolate_handle: v8::IsolateHandle,
+}
+
+impl WebWorkerHandle {
+  /// Get the WorkerEvent with lock
+  /// Return error if more than one listener tries to get event
+  pub async fn get_control_event(
+    &self,
+  ) -> Result<Option<WorkerControlEvent>, AnyError> {
+    #![allow(clippy::await_holding_refcell_ref)] // TODO(ry) remove!
+    let mut receiver = self.receiver.borrow_mut();
+    Ok(receiver.next().await)
+  }
+
+  /// Terminate the worker
+  /// This function will set the termination signal, close the message channel,
+  /// and schedule to terminate the isolate after two seconds.
+  pub fn terminate(self) {
+    use std::thread::{sleep, spawn};
+    use std::time::Duration;
+
+    let schedule_termination =
+      !self.termination_signal.swap(true, Ordering::SeqCst);
+
+    self.port.disentangle();
+
+    if schedule_termination && !self.has_terminated.load(Ordering::SeqCst) {
+      // Wake up the worker's event loop so it can terminate.
+      self.terminate_waker.wake();
+
+      let has_terminated = self.has_terminated.clone();
+
+      // Schedule to terminate the isolate's execution.
+      spawn(move || {
+        sleep(Duration::from_secs(2));
+
+        // A worker's isolate can only be terminated once, so we need a guard
+        // here.
+        let already_terminated = has_terminated.swap(true, Ordering::SeqCst);
+
+        if !already_terminated {
+          // Stop javascript execution
+          self.isolate_handle.terminate_execution();
+        }
+      });
+    }
+  }
+}
+
+fn create_handles(
+  isolate_handle: v8::IsolateHandle,
+  name: String,
+  worker_type: WebWorkerType,
+) -> (WebWorkerInternalHandle, SendableWebWorkerHandle) {
+  let (parent_port, worker_port) = create_entangled_message_port();
+  let (ctrl_tx, ctrl_rx) = mpsc::channel::<WorkerControlEvent>(1);
+  let termination_signal = Arc::new(AtomicBool::new(false));
+  let has_terminated = Arc::new(AtomicBool::new(false));
+  let terminate_waker = Arc::new(AtomicWaker::new());
+  let internal_handle = WebWorkerInternalHandle {
+    name,
+    port: Rc::new(parent_port),
+    termination_signal: termination_signal.clone(),
+    has_terminated: has_terminated.clone(),
+    terminate_waker: terminate_waker.clone(),
+    isolate_handle: isolate_handle.clone(),
+    cancel: CancelHandle::new_rc(),
+    sender: ctrl_tx,
+    worker_type,
   };
-  let external_channels = WebWorkerHandle {
-    sender: in_tx,
-    receiver: Arc::new(AsyncMutex::new(out_rx)),
-    terminated: Arc::new(AtomicBool::new(false)),
-    terminate_tx,
+  let external_handle = SendableWebWorkerHandle {
+    receiver: ctrl_rx,
+    port: worker_port,
+    termination_signal,
+    has_terminated,
+    terminate_waker,
     isolate_handle,
   };
-  (internal_channels, external_channels)
+  (internal_handle, external_handle)
 }
 
 /// This struct is an implementation of `Worker` Web API
@@ -118,321 +307,356 @@ fn create_channels(
 /// Each `WebWorker` is either a child of `MainWorker` or other
 /// `WebWorker`.
 pub struct WebWorker {
-  id: u32,
-  inspector: Option<Box<DenoInspector>>,
-  // Following fields are pub because they are accessed
-  // when creating a new WebWorker instance.
-  pub(crate) internal_channels: WorkerChannelsInternal,
+  id: WorkerId,
   pub js_runtime: JsRuntime,
   pub name: String,
-  waker: AtomicWaker,
-  event_loop_idle: bool,
-  terminate_rx: mpsc::Receiver<()>,
-  handle: WebWorkerHandle,
-  pub use_deno_namespace: bool,
+  internal_handle: WebWorkerInternalHandle,
+  pub worker_type: WebWorkerType,
   pub main_module: ModuleSpecifier,
+  poll_for_messages_fn: Option<v8::Global<v8::Value>>,
 }
 
 pub struct WebWorkerOptions {
-  /// Sets `Deno.args` in JS runtime.
-  pub args: Vec<String>,
-  pub debug_flag: bool,
-  pub unstable: bool,
-  pub ca_data: Option<Vec<u8>>,
-  pub user_agent: String,
+  pub bootstrap: BootstrapOptions,
+  pub extensions: Vec<Extension>,
+  pub unsafely_ignore_certificate_errors: Option<Vec<String>>,
+  pub root_cert_store: Option<RootCertStore>,
   pub seed: Option<u64>,
   pub module_loader: Rc<dyn ModuleLoader>,
   pub create_web_worker_cb: Arc<ops::worker_host::CreateWebWorkerCb>,
-  pub js_error_create_fn: Option<Rc<JsErrorCreateFn>>,
-  pub use_deno_namespace: bool,
-  pub attach_inspector: bool,
+  pub preload_module_cb: Arc<ops::worker_host::WorkerEventCb>,
+  pub pre_execute_module_cb: Arc<ops::worker_host::WorkerEventCb>,
+  pub format_js_error_fn: Option<Arc<FormatJsErrorFn>>,
+  pub source_map_getter: Option<Box<dyn SourceMapGetter>>,
+  pub worker_type: WebWorkerType,
   pub maybe_inspector_server: Option<Arc<InspectorServer>>,
-  pub apply_source_maps: bool,
-  /// Sets `Deno.version.deno` in JS runtime.
-  pub runtime_version: String,
-  /// Sets `Deno.version.typescript` in JS runtime.
-  pub ts_version: String,
-  /// Sets `Deno.noColor` in JS runtime.
-  pub no_color: bool,
   pub get_error_class_fn: Option<GetErrorClassFn>,
+  pub blob_store: BlobStore,
+  pub broadcast_channel: InMemoryBroadcastChannel,
+  pub shared_array_buffer_store: Option<SharedArrayBufferStore>,
+  pub compiled_wasm_module_store: Option<CompiledWasmModuleStore>,
+  pub stdio: Stdio,
 }
 
 impl WebWorker {
+  pub fn bootstrap_from_options(
+    name: String,
+    permissions: Permissions,
+    main_module: ModuleSpecifier,
+    worker_id: WorkerId,
+    options: WebWorkerOptions,
+  ) -> (Self, SendableWebWorkerHandle) {
+    let bootstrap_options = options.bootstrap.clone();
+    let (mut worker, handle) =
+      Self::from_options(name, permissions, main_module, worker_id, options);
+    worker.bootstrap(&bootstrap_options);
+    (worker, handle)
+  }
+
   pub fn from_options(
     name: String,
     permissions: Permissions,
     main_module: ModuleSpecifier,
-    worker_id: u32,
-    options: &WebWorkerOptions,
-  ) -> Self {
+    worker_id: WorkerId,
+    mut options: WebWorkerOptions,
+  ) -> (Self, SendableWebWorkerHandle) {
+    // Permissions: many ops depend on this
+    let unstable = options.bootstrap.unstable;
+    let enable_testing_features = options.bootstrap.enable_testing_features;
+    let perm_ext = Extension::builder()
+      .state(move |state| {
+        state.put::<Permissions>(permissions.clone());
+        state.put(ops::UnstableChecker { unstable });
+        state.put(ops::TestingFeaturesEnabled(enable_testing_features));
+        Ok(())
+      })
+      .build();
+
+    let mut extensions: Vec<Extension> = vec![
+      // Web APIs
+      deno_webidl::init(),
+      deno_console::init(),
+      deno_url::init(),
+      deno_web::init::<Permissions>(
+        options.blob_store.clone(),
+        Some(main_module.clone()),
+      ),
+      deno_fetch::init::<Permissions>(deno_fetch::Options {
+        user_agent: options.bootstrap.user_agent.clone(),
+        root_cert_store: options.root_cert_store.clone(),
+        unsafely_ignore_certificate_errors: options
+          .unsafely_ignore_certificate_errors
+          .clone(),
+        file_fetch_handler: Rc::new(deno_fetch::FsFetchHandler),
+        ..Default::default()
+      }),
+      deno_websocket::init::<Permissions>(
+        options.bootstrap.user_agent.clone(),
+        options.root_cert_store.clone(),
+        options.unsafely_ignore_certificate_errors.clone(),
+      ),
+      deno_webstorage::init(None).disable(),
+      deno_broadcast_channel::init(options.broadcast_channel.clone(), unstable),
+      deno_crypto::init(options.seed),
+      deno_webgpu::init(unstable),
+      // ffi
+      deno_ffi::init::<Permissions>(unstable),
+      // Runtime ops that are always initialized for WebWorkers
+      ops::web_worker::init(),
+      ops::runtime::init(main_module.clone()),
+      ops::worker_host::init(
+        options.create_web_worker_cb.clone(),
+        options.preload_module_cb.clone(),
+        options.pre_execute_module_cb.clone(),
+        options.format_js_error_fn.clone(),
+      ),
+      // Extensions providing Deno.* features
+      ops::fs_events::init(),
+      ops::fs::init(),
+      ops::io::init(),
+      ops::io::init_stdio(options.stdio),
+      deno_tls::init(),
+      deno_net::init::<Permissions>(
+        options.root_cert_store.clone(),
+        unstable,
+        options.unsafely_ignore_certificate_errors.clone(),
+      ),
+      // deno_node::init(), // todo(dsherret): re-enable
+      ops::os::init_for_worker(),
+      ops::permissions::init(),
+      ops::process::init(),
+      ops::spawn::init(),
+      ops::signal::init(),
+      ops::tty::init(),
+      deno_http::init(),
+      ops::http::init(),
+      // Permissions ext (worker specific state)
+      perm_ext,
+    ];
+
+    // Append exts
+    extensions.extend(std::mem::take(&mut options.extensions));
+
     let mut js_runtime = JsRuntime::new(RuntimeOptions {
       module_loader: Some(options.module_loader.clone()),
       startup_snapshot: Some(js::deno_isolate_init()),
-      js_error_create_fn: options.js_error_create_fn.clone(),
+      source_map_getter: options.source_map_getter,
       get_error_class_fn: options.get_error_class_fn,
+      shared_array_buffer_store: options.shared_array_buffer_store.clone(),
+      compiled_wasm_module_store: options.compiled_wasm_module_store.clone(),
+      extensions,
       ..Default::default()
     });
 
-    let inspector = if options.attach_inspector {
-      Some(DenoInspector::new(
+    if let Some(server) = options.maybe_inspector_server.clone() {
+      server.register_inspector(
+        main_module.to_string(),
         &mut js_runtime,
-        options.maybe_inspector_server.clone(),
-      ))
-    } else {
-      None
-    };
-
-    let (terminate_tx, terminate_rx) = mpsc::channel::<()>(1);
-    let isolate_handle = js_runtime.v8_isolate().thread_safe_handle();
-    let (internal_channels, handle) =
-      create_channels(isolate_handle, terminate_tx);
-
-    let mut worker = Self {
-      id: worker_id,
-      inspector,
-      internal_channels,
-      js_runtime,
-      name,
-      waker: AtomicWaker::new(),
-      event_loop_idle: false,
-      terminate_rx,
-      handle,
-      use_deno_namespace: options.use_deno_namespace,
-      main_module: main_module.clone(),
-    };
-
-    {
-      let handle = worker.thread_safe_handle();
-      let sender = worker.internal_channels.sender.clone();
-      let js_runtime = &mut worker.js_runtime;
-      // All ops registered in this function depend on these
-      {
-        let op_state = js_runtime.op_state();
-        let mut op_state = op_state.borrow_mut();
-        op_state.put(RuntimeMetrics::default());
-        op_state.put::<Permissions>(permissions);
-        op_state.put(ops::UnstableChecker {
-          unstable: options.unstable,
-        });
-      }
-
-      ops::web_worker::init(js_runtime, sender.clone(), handle);
-      ops::runtime::init(js_runtime, main_module);
-      ops::fetch::init(
-        js_runtime,
-        options.user_agent.clone(),
-        options.ca_data.clone(),
+        false,
       );
-      ops::timers::init(js_runtime);
-      ops::worker_host::init(
-        js_runtime,
-        Some(sender),
-        options.create_web_worker_cb.clone(),
-      );
-      ops::reg_json_sync(js_runtime, "op_close", deno_core::op_close);
-      ops::reg_json_sync(js_runtime, "op_resources", deno_core::op_resources);
-      ops::url::init(js_runtime);
-      ops::io::init(js_runtime);
-      ops::webgpu::init(js_runtime);
-      ops::websocket::init(
-        js_runtime,
-        options.user_agent.clone(),
-        options.ca_data.clone(),
-      );
-      ops::crypto::init(js_runtime, options.seed);
-
-      if options.use_deno_namespace {
-        ops::fs_events::init(js_runtime);
-        ops::fs::init(js_runtime);
-        ops::net::init(js_runtime);
-        ops::os::init(js_runtime);
-        ops::permissions::init(js_runtime);
-        ops::plugin::init(js_runtime);
-        ops::process::init(js_runtime);
-        ops::signal::init(js_runtime);
-        ops::tls::init(js_runtime);
-        ops::tty::init(js_runtime);
-
-        let op_state = js_runtime.op_state();
-        let mut op_state = op_state.borrow_mut();
-        let t = &mut op_state.resource_table;
-        let (stdin, stdout, stderr) = ops::io::get_stdio();
-        if let Some(stream) = stdin {
-          t.add(stream);
-        }
-        if let Some(stream) = stdout {
-          t.add(stream);
-        }
-        if let Some(stream) = stderr {
-          t.add(stream);
-        }
-      }
-
-      worker
     }
+
+    let (internal_handle, external_handle) = {
+      let handle = js_runtime.v8_isolate().thread_safe_handle();
+      let (internal_handle, external_handle) =
+        create_handles(handle, name.clone(), options.worker_type);
+      let op_state = js_runtime.op_state();
+      let mut op_state = op_state.borrow_mut();
+      op_state.put(internal_handle.clone());
+      (internal_handle, external_handle)
+    };
+
+    (
+      Self {
+        id: worker_id,
+        js_runtime,
+        name,
+        internal_handle,
+        worker_type: options.worker_type,
+        main_module,
+        poll_for_messages_fn: None,
+      },
+      external_handle,
+    )
   }
 
-  pub fn bootstrap(&mut self, options: &WebWorkerOptions) {
-    let runtime_options = json!({
-      "args": options.args,
-      "applySourceMaps": options.apply_source_maps,
-      "debugFlag": options.debug_flag,
-      "denoVersion": options.runtime_version,
-      "noColor": options.no_color,
-      "pid": std::process::id(),
-      "ppid": ops::runtime::ppid(),
-      "target": env!("TARGET"),
-      "tsVersion": options.ts_version,
-      "unstableFlag": options.unstable,
-      "v8Version": deno_core::v8_version(),
-      "location": self.main_module,
-    });
-
-    let runtime_options_str =
-      serde_json::to_string_pretty(&runtime_options).unwrap();
-
+  pub fn bootstrap(&mut self, options: &BootstrapOptions) {
     // Instead of using name for log we use `worker-${id}` because
     // WebWorkers can have empty string as name.
     let script = format!(
-      "bootstrap.workerRuntime({}, \"{}\", {}, \"worker-{}\")",
-      runtime_options_str, self.name, options.use_deno_namespace, self.id
+      "bootstrap.workerRuntime({}, \"{}\", \"{}\")",
+      options.as_json(),
+      self.name,
+      self.id
     );
     self
-      .execute(&script)
+      .execute_script(&located_script_name!(), &script)
       .expect("Failed to execute worker bootstrap script");
+    // Save a reference to function that will start polling for messages
+    // from a worker host; it will be called after the user code is loaded.
+    let script = r#"
+    const pollForMessages = globalThis.pollForMessages;
+    delete globalThis.pollForMessages;
+    pollForMessages
+    "#;
+    let poll_for_messages_fn = self
+      .js_runtime
+      .execute_script(&located_script_name!(), script)
+      .expect("Failed to execute worker bootstrap script");
+    self.poll_for_messages_fn = Some(poll_for_messages_fn);
   }
 
-  /// Same as execute2() but the filename defaults to "$CWD/__anonymous__".
-  pub fn execute(&mut self, js_source: &str) -> Result<(), AnyError> {
-    let path = env::current_dir().unwrap().join("__anonymous__");
-    let url = Url::from_file_path(path).unwrap();
-    self.js_runtime.execute(url.as_str(), js_source)
+  /// See [JsRuntime::execute_script](deno_core::JsRuntime::execute_script)
+  pub fn execute_script(
+    &mut self,
+    name: &str,
+    source_code: &str,
+  ) -> Result<(), AnyError> {
+    self.js_runtime.execute_script(name, source_code)?;
+    Ok(())
+  }
+
+  /// Loads and instantiates specified JavaScript module as "main" module.
+  pub async fn preload_main_module(
+    &mut self,
+    module_specifier: &ModuleSpecifier,
+  ) -> Result<ModuleId, AnyError> {
+    self
+      .js_runtime
+      .load_main_module(module_specifier, None)
+      .await
+  }
+
+  /// Loads and instantiates specified JavaScript module as "side" module.
+  pub async fn preload_side_module(
+    &mut self,
+    module_specifier: &ModuleSpecifier,
+  ) -> Result<ModuleId, AnyError> {
+    self
+      .js_runtime
+      .load_side_module(module_specifier, None)
+      .await
   }
 
   /// Loads, instantiates and executes specified JavaScript module.
-  pub async fn execute_module(
+  ///
+  /// This method assumes that worker can't be terminated when executing
+  /// side module code.
+  pub async fn execute_side_module(
     &mut self,
     module_specifier: &ModuleSpecifier,
   ) -> Result<(), AnyError> {
-    let id = self.js_runtime.load_module(module_specifier, None).await?;
-
+    let id = self.preload_side_module(module_specifier).await?;
     let mut receiver = self.js_runtime.mod_evaluate(id);
     tokio::select! {
-      maybe_result = receiver.next() => {
+      biased;
+
+      maybe_result = &mut receiver => {
+        debug!("received module evaluate {:#?}", maybe_result);
+        maybe_result.expect("Module evaluation result not provided.")
+      }
+
+      event_loop_result = self.js_runtime.run_event_loop(false) => {
+        event_loop_result?;
+        let maybe_result = receiver.await;
+        maybe_result.expect("Module evaluation result not provided.")
+      }
+    }
+  }
+
+  /// Loads, instantiates and executes specified JavaScript module.
+  ///
+  /// This module will have "import.meta.main" equal to true.
+  pub async fn execute_main_module(
+    &mut self,
+    id: ModuleId,
+  ) -> Result<(), AnyError> {
+    let mut receiver = self.js_runtime.mod_evaluate(id);
+    tokio::select! {
+      biased;
+
+      maybe_result = &mut receiver => {
         debug!("received worker module evaluate {:#?}", maybe_result);
         // If `None` is returned it means that runtime was destroyed before
         // evaluation was complete. This can happen in Web Worker when `self.close()`
         // is called at top level.
-        let result = maybe_result.unwrap_or(Ok(()));
-        return result;
+        maybe_result.unwrap_or(Ok(()))
       }
 
-      event_loop_result = self.run_event_loop() => {
-        if self.has_been_terminated() {
-          return Ok(());
+      event_loop_result = self.run_event_loop(false) => {
+        if self.internal_handle.is_terminated() {
+           return Ok(());
         }
         event_loop_result?;
-        let maybe_result = receiver.next().await;
-        let result = maybe_result.unwrap_or(Ok(()));
-        return result;
+        let maybe_result = receiver.await;
+        maybe_result.unwrap_or(Ok(()))
       }
     }
   }
 
-  /// Returns a way to communicate with the Worker from other threads.
-  pub fn thread_safe_handle(&self) -> WebWorkerHandle {
-    self.handle.clone()
-  }
-
-  pub fn has_been_terminated(&self) -> bool {
-    self.handle.terminated.load(Ordering::SeqCst)
-  }
-
-  pub fn poll_event_loop(
+  fn poll_event_loop(
     &mut self,
     cx: &mut Context,
+    wait_for_inspector: bool,
   ) -> Poll<Result<(), AnyError>> {
-    if self.has_been_terminated() {
+    // If awakened because we are terminating, just return Ok
+    if self.internal_handle.terminate_if_needed() {
       return Poll::Ready(Ok(()));
     }
 
-    if !self.event_loop_idle {
-      let poll_result = {
-        // We always poll the inspector if it exists.
-        let _ = self.inspector.as_mut().map(|i| i.poll_unpin(cx));
-        self.waker.register(cx.waker());
-        self.js_runtime.poll_event_loop(cx)
-      };
+    self.internal_handle.terminate_waker.register(cx.waker());
 
-      if let Poll::Ready(r) = poll_result {
-        if self.has_been_terminated() {
+    match self.js_runtime.poll_event_loop(cx, wait_for_inspector) {
+      Poll::Ready(r) => {
+        // If js ended because we are terminating, just return Ok
+        if self.internal_handle.terminate_if_needed() {
           return Poll::Ready(Ok(()));
         }
 
         if let Err(e) = r {
-          print_worker_error(e.to_string(), &self.name);
-          let mut sender = self.internal_channels.sender.clone();
-          sender
-            .try_send(WorkerEvent::Error(e))
-            .expect("Failed to post message to host");
-        }
-        self.event_loop_idle = true;
-      }
-    }
-
-    if let Poll::Ready(r) = self.terminate_rx.poll_next_unpin(cx) {
-      // terminate_rx should never be closed
-      assert!(r.is_some());
-      return Poll::Ready(Ok(()));
-    }
-
-    let maybe_msg_poll_result =
-      self.internal_channels.receiver.poll_next_unpin(cx);
-
-    if let Poll::Ready(maybe_msg) = maybe_msg_poll_result {
-      let msg =
-        maybe_msg.expect("Received `None` instead of message in worker");
-      let msg = String::from_utf8(msg.to_vec()).unwrap();
-      let script = format!("workerMessageRecvCallback({})", msg);
-
-      // TODO(bartlomieju): set proper script name like "deno:runtime/web_worker.js"
-      // so it's dimmed in stack trace instead of using "__anonymous__"
-      if let Err(e) = self.execute(&script) {
-        // If execution was terminated during message callback then
-        // just ignore it
-        if self.has_been_terminated() {
-          return Poll::Ready(Ok(()));
+          return Poll::Ready(Err(e));
         }
 
-        // Otherwise forward error to host
-        let mut sender = self.internal_channels.sender.clone();
-        sender
-          .try_send(WorkerEvent::Error(e))
-          .expect("Failed to post message to host");
+        panic!(
+          "coding error: either js is polling or the worker is terminated"
+        );
       }
-
-      // Let event loop be polled again
-      self.event_loop_idle = false;
-      self.waker.wake();
+      Poll::Pending => Poll::Pending,
     }
-
-    Poll::Pending
   }
 
-  pub async fn run_event_loop(&mut self) -> Result<(), AnyError> {
-    poll_fn(|cx| self.poll_event_loop(cx)).await
+  pub async fn run_event_loop(
+    &mut self,
+    wait_for_inspector: bool,
+  ) -> Result<(), AnyError> {
+    poll_fn(|cx| self.poll_event_loop(cx, wait_for_inspector)).await
+  }
+
+  // Starts polling for messages from worker host from JavaScript.
+  fn start_polling_for_messages(&mut self) {
+    let poll_for_messages_fn = self.poll_for_messages_fn.take().unwrap();
+    let scope = &mut self.js_runtime.handle_scope();
+    let poll_for_messages =
+      v8::Local::<v8::Value>::new(scope, poll_for_messages_fn);
+    let fn_ = v8::Local::<v8::Function>::try_from(poll_for_messages).unwrap();
+    let undefined = v8::undefined(scope);
+    // This call may return `None` if worker is terminated.
+    fn_.call(scope, undefined.into(), &[]);
   }
 }
 
-impl Drop for WebWorker {
-  fn drop(&mut self) {
-    // The Isolate object must outlive the Inspector object, but this is
-    // currently not enforced by the type system.
-    self.inspector.take();
-  }
-}
-
-fn print_worker_error(error_str: String, name: &str) {
+fn print_worker_error(
+  error: &AnyError,
+  name: &str,
+  format_js_error_fn: Option<&FormatJsErrorFn>,
+) {
+  let error_str = match format_js_error_fn {
+    Some(format_js_error_fn) => match error.downcast_ref::<JsError>() {
+      Some(js_error) => format_js_error_fn(js_error),
+      None => error.to_string(),
+    },
+    None => error.to_string(),
+  };
   eprintln!(
     "{}: Uncaught (in worker \"{}\") {}",
     colors::red_bold("error"),
@@ -444,175 +668,88 @@ fn print_worker_error(error_str: String, name: &str) {
 /// This function should be called from a thread dedicated to this worker.
 // TODO(bartlomieju): check if order of actions is aligned to Worker spec
 pub fn run_web_worker(
-  mut worker: WebWorker,
+  worker: WebWorker,
   specifier: ModuleSpecifier,
   maybe_source_code: Option<String>,
+  preload_module_cb: Arc<ops::worker_host::WorkerEventCb>,
+  pre_execute_module_cb: Arc<ops::worker_host::WorkerEventCb>,
+  format_js_error_fn: Option<Arc<FormatJsErrorFn>>,
 ) -> Result<(), AnyError> {
   let name = worker.name.to_string();
-
-  let rt = create_basic_runtime();
 
   // TODO(bartlomieju): run following block using "select!"
   // with terminate
 
-  // Execute provided source code immediately
-  let result = if let Some(source_code) = maybe_source_code {
-    worker.execute(&source_code)
-  } else {
-    // TODO(bartlomieju): add "type": "classic", ie. ability to load
-    // script instead of module
-    let load_future = worker.execute_module(&specifier).boxed_local();
+  let fut = async move {
+    let internal_handle = worker.internal_handle.clone();
+    let result = (preload_module_cb)(worker).await;
 
-    rt.block_on(load_future)
-  };
+    let mut worker = match result {
+      Ok(worker) => worker,
+      Err(e) => {
+        print_worker_error(&e, &name, format_js_error_fn.as_deref());
+        internal_handle
+          .post_event(WorkerControlEvent::TerminalError(e))
+          .expect("Failed to post message to host");
 
-  let mut sender = worker.internal_channels.sender.clone();
-
-  // If sender is closed it means that worker has already been closed from
-  // within using "globalThis.close()"
-  if sender.is_closed() {
-    return Ok(());
-  }
-
-  if let Err(e) = result {
-    print_worker_error(e.to_string(), &name);
-    sender
-      .try_send(WorkerEvent::TerminalError(e))
-      .expect("Failed to post message to host");
-
-    // Failure to execute script is a terminal error, bye, bye.
-    return Ok(());
-  }
-
-  let result = rt.block_on(worker.run_event_loop());
-  debug!("Worker thread shuts down {}", &name);
-  result
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::tokio_util;
-  use deno_core::serde_json::json;
-
-  fn create_test_web_worker() -> WebWorker {
-    let main_module = deno_core::resolve_url_or_path("./hello.js").unwrap();
-    let module_loader = Rc::new(deno_core::NoopModuleLoader);
-    let create_web_worker_cb = Arc::new(|_| unreachable!());
-
-    let options = WebWorkerOptions {
-      args: vec![],
-      apply_source_maps: false,
-      debug_flag: false,
-      unstable: false,
-      ca_data: None,
-      user_agent: "x".to_string(),
-      seed: None,
-      module_loader,
-      create_web_worker_cb,
-      js_error_create_fn: None,
-      use_deno_namespace: false,
-      attach_inspector: false,
-      maybe_inspector_server: None,
-      runtime_version: "x".to_string(),
-      ts_version: "x".to_string(),
-      no_color: true,
-      get_error_class_fn: None,
+        // Failure to execute script is a terminal error, bye, bye.
+        return Ok(());
+      }
     };
 
-    let mut worker = WebWorker::from_options(
-      "TEST".to_string(),
-      Permissions::allow_all(),
-      main_module,
-      1,
-      &options,
-    );
-    worker.bootstrap(&options);
-    worker
-  }
+    // Execute provided source code immediately
+    let result = if let Some(source_code) = maybe_source_code {
+      let r = worker.execute_script(&located_script_name!(), &source_code);
+      worker.start_polling_for_messages();
+      r
+    } else {
+      // TODO(bartlomieju): add "type": "classic", ie. ability to load
+      // script instead of module
+      match worker.preload_main_module(&specifier).await {
+        Ok(id) => {
+          worker = match (pre_execute_module_cb)(worker).await {
+            Ok(worker) => worker,
+            Err(e) => {
+              print_worker_error(&e, &name, format_js_error_fn.as_deref());
+              internal_handle
+                .post_event(WorkerControlEvent::TerminalError(e))
+                .expect("Failed to post message to host");
 
-  #[tokio::test]
-  async fn test_worker_messages() {
-    let (handle_sender, handle_receiver) =
-      std::sync::mpsc::sync_channel::<WebWorkerHandle>(1);
-
-    let join_handle = std::thread::spawn(move || {
-      let mut worker = create_test_web_worker();
-      let source = r#"
-          onmessage = function(e) {
-            console.log("msg from main script", e.data);
-            if (e.data == "exit") {
-              return close();
-            } else {
-              console.assert(e.data === "hi");
+              // Failure to execute script is a terminal error, bye, bye.
+              return Ok(());
             }
-            postMessage([1, 2, 3]);
-            console.log("after postMessage");
-          }
-          "#;
-      worker.execute(source).unwrap();
-      let handle = worker.thread_safe_handle();
-      handle_sender.send(handle).unwrap();
-      let r = tokio_util::run_basic(worker.run_event_loop());
-      assert!(r.is_ok())
-    });
-
-    let mut handle = handle_receiver.recv().unwrap();
-
-    let msg = json!("hi").to_string().into_boxed_str().into_boxed_bytes();
-    let r = handle.post_message(msg.clone());
-    assert!(r.is_ok());
-
-    let maybe_msg = handle.get_event().await.unwrap();
-    assert!(maybe_msg.is_some());
-
-    let r = handle.post_message(msg.clone());
-    assert!(r.is_ok());
-
-    let maybe_msg = handle.get_event().await.unwrap();
-    assert!(maybe_msg.is_some());
-    match maybe_msg {
-      Some(WorkerEvent::Message(buf)) => {
-        assert_eq!(*buf, *b"[1,2,3]");
+          };
+          worker.start_polling_for_messages();
+          worker.execute_main_module(id).await
+        }
+        Err(e) => Err(e),
       }
-      _ => unreachable!(),
+    };
+
+    // If sender is closed it means that worker has already been closed from
+    // within using "globalThis.close()"
+    if internal_handle.is_terminated() {
+      return Ok(());
     }
 
-    let msg = json!("exit")
-      .to_string()
-      .into_boxed_str()
-      .into_boxed_bytes();
-    let r = handle.post_message(msg);
-    assert!(r.is_ok());
-    let event = handle.get_event().await.unwrap();
-    assert!(event.is_none());
-    handle.sender.close_channel();
-    join_handle.join().expect("Failed to join worker thread");
-  }
+    let result = if result.is_ok() {
+      worker.run_event_loop(true).await
+    } else {
+      result
+    };
 
-  #[tokio::test]
-  async fn removed_from_resource_table_on_close() {
-    let (handle_sender, handle_receiver) =
-      std::sync::mpsc::sync_channel::<WebWorkerHandle>(1);
+    if let Err(e) = result {
+      print_worker_error(&e, &name, format_js_error_fn.as_deref());
+      internal_handle
+        .post_event(WorkerControlEvent::TerminalError(e))
+        .expect("Failed to post message to host");
 
-    let join_handle = std::thread::spawn(move || {
-      let mut worker = create_test_web_worker();
-      worker.execute("onmessage = () => { close(); }").unwrap();
-      let handle = worker.thread_safe_handle();
-      handle_sender.send(handle).unwrap();
-      let r = tokio_util::run_basic(worker.run_event_loop());
-      assert!(r.is_ok())
-    });
+      // Failure to execute script is a terminal error, bye, bye.
+      return Ok(());
+    }
 
-    let mut handle = handle_receiver.recv().unwrap();
-
-    let msg = json!("hi").to_string().into_boxed_str().into_boxed_bytes();
-    let r = handle.post_message(msg.clone());
-    assert!(r.is_ok());
-    let event = handle.get_event().await.unwrap();
-    assert!(event.is_none());
-    handle.sender.close_channel();
-
-    join_handle.join().expect("Failed to join worker thread");
-  }
+    debug!("Worker thread shuts down {}", &name);
+    result
+  };
+  run_local(fut)
 }

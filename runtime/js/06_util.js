@@ -1,8 +1,17 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 "use strict";
 
 ((window) => {
+  const {
+    decodeURIComponent,
+    ObjectPrototypeIsPrototypeOf,
+    Promise,
+    SafeArrayIterator,
+    StringPrototypeReplace,
+    TypeError,
+  } = window.__bootstrap.primordials;
   const { build } = window.__bootstrap.build;
+  const { URLPrototype } = window.__bootstrap.url;
   let logDebug = false;
   let logSource = "JS";
 
@@ -17,20 +26,10 @@
     if (logDebug) {
       // if we destructure `console` off `globalThis` too early, we don't bind to
       // the right console, therefore we don't log anything out.
-      globalThis.console.log(`DEBUG ${logSource} -`, ...args);
-    }
-  }
-
-  class AssertionError extends Error {
-    constructor(msg) {
-      super(msg);
-      this.name = "AssertionError";
-    }
-  }
-
-  function assert(cond, msg = "Assertion failed.") {
-    if (!cond) {
-      throw new AssertionError(msg);
+      globalThis.console.log(
+        `DEBUG ${logSource} -`,
+        ...new SafeArrayIterator(args),
+      );
     }
   }
 
@@ -46,26 +45,24 @@
     return promise;
   }
 
-  function immutableDefine(
-    o,
-    p,
-    value,
-  ) {
-    Object.defineProperty(o, p, {
-      value,
-      configurable: false,
-      writable: false,
-    });
-  }
-
   // Keep in sync with `fromFileUrl()` in `std/path/win32.ts`.
   function pathFromURLWin32(url) {
-    let path = decodeURIComponent(
-      url.pathname
-        .replace(/^\/*([A-Za-z]:)(\/|$)/, "$1/")
-        .replace(/\//g, "\\")
-        .replace(/%(?![0-9A-Fa-f]{2})/g, "%25"),
+    let p = StringPrototypeReplace(
+      url.pathname,
+      /^\/*([A-Za-z]:)(\/|$)/,
+      "$1/",
     );
+    p = StringPrototypeReplace(
+      p,
+      /\//g,
+      "\\",
+    );
+    p = StringPrototypeReplace(
+      p,
+      /%(?![0-9A-Fa-f]{2})/g,
+      "%25",
+    );
+    let path = decodeURIComponent(p);
     if (url.hostname != "") {
       // Note: The `URL` implementation guarantees that the drive letter and
       // hostname are mutually exclusive. Otherwise it would not have been valid
@@ -82,12 +79,12 @@
     }
 
     return decodeURIComponent(
-      url.pathname.replace(/%(?![0-9A-Fa-f]{2})/g, "%25"),
+      StringPrototypeReplace(url.pathname, /%(?![0-9A-Fa-f]{2})/g, "%25"),
     );
   }
 
   function pathFromURL(pathOrUrl) {
-    if (pathOrUrl instanceof URL) {
+    if (ObjectPrototypeIsPrototypeOf(URLPrototype, pathOrUrl)) {
       if (pathOrUrl.protocol != "file:") {
         throw new TypeError("Must be a file URL.");
       }
@@ -117,6 +114,7 @@
     return {
       value,
       writable: true,
+      enumerable: false,
       configurable: true,
     };
   }
@@ -125,6 +123,8 @@
     return {
       value,
       enumerable: true,
+      writable: false,
+      configurable: true,
     };
   }
 
@@ -132,6 +132,7 @@
     return {
       get: getter,
       enumerable: true,
+      configurable: true,
     };
   }
 
@@ -139,9 +140,6 @@
     log,
     setLogDebug,
     createResolvable,
-    assert,
-    AssertionError,
-    immutableDefine,
     pathFromURL,
     writable,
     nonEnumerable,

@@ -1,53 +1,165 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 
-use crate::error::bad_resource_id;
-use crate::error::type_error;
-use crate::error::AnyError;
 use crate::gotham_state::GothamState;
 use crate::resources::ResourceTable;
 use crate::runtime::GetErrorClassFn;
-use crate::BufVec;
-use crate::ZeroCopyBuf;
+use crate::OpDecl;
+use crate::OpsTracker;
+use anyhow::Error;
+use futures::future::maybe_done;
+use futures::future::FusedFuture;
+use futures::future::MaybeDone;
+use futures::ready;
+use futures::task::noop_waker;
 use futures::Future;
-use indexmap::IndexMap;
-use serde_json::json;
-use serde_json::Value;
+use serde::Serialize;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::iter::once;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::task::Context;
+use std::task::Poll;
 
-pub type OpAsyncFuture = Pin<Box<dyn Future<Output = Box<[u8]>>>>;
-pub type OpFn = dyn Fn(Rc<RefCell<OpState>>, BufVec) -> Op + 'static;
+/// Wrapper around a Future, which causes that Future to be polled immediately.
+///
+/// Background: ops are stored in a `FuturesUnordered` structure which polls
+/// them, but without the `OpCall` wrapper this doesn't happen until the next
+/// turn of the event loop, which is too late for certain ops.
+pub struct OpCall<T>(MaybeDone<Pin<Box<dyn Future<Output = T>>>>);
+
+impl<T> OpCall<T> {
+  /// Wraps a future, and polls the inner future immediately.
+  /// This should be the default choice for ops.
+  pub fn eager(fut: impl Future<Output = T> + 'static) -> Self {
+    let boxed = Box::pin(fut) as Pin<Box<dyn Future<Output = T>>>;
+    let mut inner = maybe_done(boxed);
+    let waker = noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    let mut pinned = Pin::new(&mut inner);
+    let _ = pinned.as_mut().poll(&mut cx);
+    Self(inner)
+  }
+
+  /// Wraps a future; the inner future is polled the usual way (lazily).
+  pub fn lazy(fut: impl Future<Output = T> + 'static) -> Self {
+    let boxed = Box::pin(fut) as Pin<Box<dyn Future<Output = T>>>;
+    let inner = maybe_done(boxed);
+    Self(inner)
+  }
+
+  /// Create a future by specifying its output. This is basically the same as
+  /// `async { value }` or `futures::future::ready(value)`.
+  pub fn ready(value: T) -> Self {
+    Self(MaybeDone::Done(value))
+  }
+}
+
+impl<T> Future for OpCall<T> {
+  type Output = T;
+
+  fn poll(
+    self: std::pin::Pin<&mut Self>,
+    cx: &mut std::task::Context<'_>,
+  ) -> std::task::Poll<Self::Output> {
+    // TODO(piscisaureus): safety comment
+    #[allow(clippy::undocumented_unsafe_blocks)]
+    let inner = unsafe { &mut self.get_unchecked_mut().0 };
+    let mut pinned = Pin::new(inner);
+    ready!(pinned.as_mut().poll(cx));
+    Poll::Ready(pinned.as_mut().take_output().unwrap())
+  }
+}
+
+impl<F> FusedFuture for OpCall<F>
+where
+  F: Future,
+{
+  fn is_terminated(&self) -> bool {
+    self.0.is_terminated()
+  }
+}
+
+pub type PromiseId = i32;
+pub type OpAsyncFuture = OpCall<(PromiseId, OpId, OpResult)>;
+pub type OpFn =
+  fn(&mut v8::HandleScope, v8::FunctionCallbackArguments, v8::ReturnValue);
 pub type OpId = usize;
 
 pub enum Op {
-  Sync(Box<[u8]>),
+  Sync(OpResult),
   Async(OpAsyncFuture),
-  /// AsyncUnref is the variation of Async, which doesn't block the program
-  /// exiting.
-  AsyncUnref(OpAsyncFuture),
   NotFound,
+}
+
+pub enum OpResult {
+  Ok(serde_v8::SerializablePkg),
+  Err(OpError),
+}
+
+impl OpResult {
+  pub fn to_v8<'a>(
+    &self,
+    scope: &mut v8::HandleScope<'a>,
+  ) -> Result<v8::Local<'a, v8::Value>, serde_v8::Error> {
+    match self {
+      Self::Ok(x) => x.to_v8(scope),
+      Self::Err(err) => serde_v8::to_v8(scope, err),
+    }
+  }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpError {
+  #[serde(rename = "$err_class_name")]
+  class_name: &'static str,
+  message: String,
+  code: Option<&'static str>,
+}
+
+impl OpError {
+  pub fn new(get_class: GetErrorClassFn, err: Error) -> Self {
+    Self {
+      class_name: (get_class)(&err),
+      message: err.to_string(),
+      code: crate::error_codes::get_error_code(&err),
+    }
+  }
+}
+
+pub fn to_op_result<R: Serialize + 'static>(
+  get_class: GetErrorClassFn,
+  result: Result<R, Error>,
+) -> OpResult {
+  match result {
+    Ok(v) => OpResult::Ok(v.into()),
+    Err(err) => OpResult::Err(OpError::new(get_class, err)),
+  }
+}
+
+// TODO(@AaronO): optimize OpCtx(s) mem usage ?
+pub struct OpCtx {
+  pub id: OpId,
+  pub state: Rc<RefCell<OpState>>,
+  pub decl: OpDecl,
 }
 
 /// Maintains the resources and ops inside a JS runtime.
 pub struct OpState {
   pub resource_table: ResourceTable,
-  pub op_table: OpTable,
   pub get_error_class_fn: GetErrorClassFn,
+  pub tracker: OpsTracker,
   gotham_state: GothamState,
 }
 
 impl OpState {
-  pub(crate) fn new() -> OpState {
+  pub fn new(ops_count: usize) -> OpState {
     OpState {
       resource_table: Default::default(),
-      op_table: OpTable::default(),
       get_error_class_fn: &|_| "Error",
       gotham_state: Default::default(),
+      tracker: OpsTracker::new(ops_count),
     }
   }
 }
@@ -63,133 +175,5 @@ impl Deref for OpState {
 impl DerefMut for OpState {
   fn deref_mut(&mut self) -> &mut Self::Target {
     &mut self.gotham_state
-  }
-}
-
-/// Collection for storing registered ops. The special 'get_op_catalog'
-/// op with OpId `0` is automatically added when the OpTable is created.
-pub struct OpTable(IndexMap<String, Rc<OpFn>>);
-
-impl OpTable {
-  pub fn register_op<F>(&mut self, name: &str, op_fn: F) -> OpId
-  where
-    F: Fn(Rc<RefCell<OpState>>, BufVec) -> Op + 'static,
-  {
-    let (op_id, prev) = self.0.insert_full(name.to_owned(), Rc::new(op_fn));
-    assert!(prev.is_none());
-    op_id
-  }
-
-  pub fn route_op(
-    op_id: OpId,
-    state: Rc<RefCell<OpState>>,
-    bufs: BufVec,
-  ) -> Op {
-    if op_id == 0 {
-      let ops: HashMap<String, OpId> =
-        state.borrow().op_table.0.keys().cloned().zip(0..).collect();
-      let buf = serde_json::to_vec(&ops).map(Into::into).unwrap();
-      Op::Sync(buf)
-    } else {
-      let op_fn = state
-        .borrow()
-        .op_table
-        .0
-        .get_index(op_id)
-        .map(|(_, op_fn)| op_fn.clone());
-      match op_fn {
-        Some(f) => (f)(state, bufs),
-        None => Op::NotFound,
-      }
-    }
-  }
-}
-
-impl Default for OpTable {
-  fn default() -> Self {
-    fn dummy(_state: Rc<RefCell<OpState>>, _bufs: BufVec) -> Op {
-      unreachable!()
-    }
-    Self(once(("ops".to_owned(), Rc::new(dummy) as _)).collect())
-  }
-}
-
-/// Return map of resources with id as key
-/// and string representation as value.
-///
-/// This op must be wrapped in `json_op_sync`.
-pub fn op_resources(
-  state: &mut OpState,
-  _args: Value,
-  _zero_copy: &mut [ZeroCopyBuf],
-) -> Result<Value, AnyError> {
-  let serialized_resources: HashMap<u32, String> = state
-    .resource_table
-    .names()
-    .map(|(rid, name)| (rid, name.to_string()))
-    .collect();
-  Ok(json!(serialized_resources))
-}
-
-/// Remove a resource from the resource table.
-///
-/// This op must be wrapped in `json_op_sync`.
-pub fn op_close(
-  state: &mut OpState,
-  args: Value,
-  _zero_copy: &mut [ZeroCopyBuf],
-) -> Result<Value, AnyError> {
-  let rid = args
-    .get("rid")
-    .and_then(Value::as_u64)
-    .ok_or_else(|| type_error("missing or invalid `rid`"))?;
-
-  state
-    .resource_table
-    .close(rid as u32)
-    .ok_or_else(bad_resource_id)?;
-
-  Ok(json!({}))
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn op_table() {
-    let state = Rc::new(RefCell::new(OpState::new()));
-
-    let foo_id;
-    let bar_id;
-    {
-      let op_table = &mut state.borrow_mut().op_table;
-      foo_id = op_table.register_op("foo", |_, _| Op::Sync(b"oof!"[..].into()));
-      assert_eq!(foo_id, 1);
-      bar_id = op_table.register_op("bar", |_, _| Op::Sync(b"rab!"[..].into()));
-      assert_eq!(bar_id, 2);
-    }
-
-    let foo_res = OpTable::route_op(foo_id, state.clone(), Default::default());
-    assert!(matches!(foo_res, Op::Sync(buf) if &*buf == b"oof!"));
-    let bar_res = OpTable::route_op(bar_id, state.clone(), Default::default());
-    assert!(matches!(bar_res, Op::Sync(buf) if &*buf == b"rab!"));
-
-    let catalog_res = OpTable::route_op(0, state, Default::default());
-    let mut catalog_entries = match catalog_res {
-      Op::Sync(buf) => serde_json::from_slice::<HashMap<String, OpId>>(&buf)
-        .map(|map| map.into_iter().collect::<Vec<_>>())
-        .unwrap(),
-      _ => panic!("unexpected `Op` variant"),
-    };
-    catalog_entries.sort_by(|(_, id1), (_, id2)| id1.partial_cmp(id2).unwrap());
-    assert_eq!(
-      catalog_entries,
-      vec![
-        ("ops".to_owned(), 0),
-        ("foo".to_owned(), 1),
-        ("bar".to_owned(), 2)
-      ]
-    );
   }
 }

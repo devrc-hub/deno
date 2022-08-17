@@ -1,17 +1,29 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 
 /// <reference no-default-lib="true" />
 /// <reference lib="deno.ns" />
 /// <reference lib="deno.shared_globals" />
 /// <reference lib="deno.webgpu" />
+/// <reference lib="deno.webstorage" />
 /// <reference lib="esnext" />
 
+/** @category Web APIs */
+interface WindowEventMap {
+  "error": ErrorEvent;
+  "unhandledrejection": PromiseRejectionEvent;
+}
+
+/** @category Web APIs */
 declare class Window extends EventTarget {
   new(): Window;
   readonly window: Window & typeof globalThis;
   readonly self: Window & typeof globalThis;
+  onerror: ((this: Window, ev: ErrorEvent) => any) | null;
   onload: ((this: Window, ev: Event) => any) | null;
   onunload: ((this: Window, ev: Event) => any) | null;
+  onunhandledrejection:
+    | ((this: Window, ev: PromiseRejectionEvent) => any)
+    | null;
   close: () => void;
   readonly closed: boolean;
   alert: (message?: string) => void;
@@ -22,51 +34,164 @@ declare class Window extends EventTarget {
   navigator: Navigator;
   Location: typeof Location;
   location: Location;
+  localStorage: Storage;
+  sessionStorage: Storage;
+
+  addEventListener<K extends keyof WindowEventMap>(
+    type: K,
+    listener: (
+      this: Window,
+      ev: WindowEventMap[K],
+    ) => any,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  removeEventListener<K extends keyof WindowEventMap>(
+    type: K,
+    listener: (
+      this: Window,
+      ev: WindowEventMap[K],
+    ) => any,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ): void;
 }
 
+/** @category Web APIs */
 declare var window: Window & typeof globalThis;
+/** @category Web APIs */
 declare var self: Window & typeof globalThis;
+/** @category DOM Events */
+declare var onerror: ((this: Window, ev: ErrorEvent) => any) | null;
+/** @category DOM Events */
 declare var onload: ((this: Window, ev: Event) => any) | null;
+/** @category DOM Events */
 declare var onunload: ((this: Window, ev: Event) => any) | null;
+/** @category Observability */
+declare var onunhandledrejection:
+  | ((this: Window, ev: PromiseRejectionEvent) => any)
+  | null;
+/** @category Web Storage API */
+declare var localStorage: Storage;
+/** @category Web Storage API */
+declare var sessionStorage: Storage;
 
+/** @category Web APIs */
 declare class Navigator {
   constructor();
   readonly gpu: GPU;
+  readonly hardwareConcurrency: number;
+  readonly userAgent: string;
 }
 
+/** @category Web APIs */
 declare var navigator: Navigator;
 
 /**
  * Shows the given message and waits for the enter key pressed.
+ *
  * If the stdin is not interactive, it does nothing.
+ *
+ * @category Web APIs
+ *
  * @param message
  */
 declare function alert(message?: string): void;
 
 /**
  * Shows the given message and waits for the answer. Returns the user's answer as boolean.
+ *
  * Only `y` and `Y` are considered as true.
+ *
  * If the stdin is not interactive, it returns false.
+ *
+ * @category Web APIs
+ *
  * @param message
  */
 declare function confirm(message?: string): boolean;
 
 /**
  * Shows the given message and waits for the user's input. Returns the user's input as string.
+ *
  * If the default value is given and the user inputs the empty string, then it returns the given
  * default value.
+ *
  * If the default value is not given and the user inputs the empty string, it returns null.
+ *
  * If the stdin is not interactive, it returns null.
+ *
+ * @category Web APIs
+ *
  * @param message
  * @param defaultValue
  */
 declare function prompt(message?: string, defaultValue?: string): string | null;
 
-// TODO(nayeemrmn): Move this to `op_crates/web` where its implementation is.
+/** Registers an event listener in the global scope, which will be called
+ * synchronously whenever the event `type` is dispatched.
+ *
+ * ```ts
+ * addEventListener('unload', () => { console.log('All finished!'); });
+ * ...
+ * dispatchEvent(new Event('unload'));
+ * ```
+ *
+ * @category DOM Events
+ */
+declare function addEventListener<
+  K extends keyof WindowEventMap,
+>(
+  type: K,
+  listener: (this: Window, ev: WindowEventMap[K]) => any,
+  options?: boolean | AddEventListenerOptions,
+): void;
+/** @category DOM Events */
+declare function addEventListener(
+  type: string,
+  listener: EventListenerOrEventListenerObject,
+  options?: boolean | AddEventListenerOptions,
+): void;
+
+/** Remove a previously registered event listener from the global scope
+ *
+ * ```ts
+ * const listener = () => { console.log('hello'); };
+ * addEventListener('load', listener);
+ * removeEventListener('load', listener);
+ * ```
+ *
+ * @category DOM Events
+ */
+declare function removeEventListener<
+  K extends keyof WindowEventMap,
+>(
+  type: K,
+  listener: (this: Window, ev: WindowEventMap[K]) => any,
+  options?: boolean | EventListenerOptions,
+): void;
+declare function removeEventListener(
+  type: string,
+  listener: EventListenerOrEventListenerObject,
+  options?: boolean | EventListenerOptions,
+): void;
+
+// TODO(nayeemrmn): Move this to `extensions/web` where its implementation is.
 // The types there must first be split into window, worker and global types.
 /** The location (URL) of the object it is linked to. Changes done on it are
  * reflected on the object it relates to. Accessible via
- * `globalThis.location`. */
+ * `globalThis.location`.
+ *
+ * @category Web APIs
+ */
 declare class Location {
   constructor();
   /** Returns a DOMStringList object listing the origins of the ancestor
@@ -130,6 +255,7 @@ declare class Location {
   replace(url: string): void;
 }
 
-// TODO(nayeemrmn): Move this to `op_crates/web` where its implementation is.
+// TODO(nayeemrmn): Move this to `extensions/web` where its implementation is.
 // The types there must first be split into window, worker and global types.
+/** @category Web APIs */
 declare var location: Location;

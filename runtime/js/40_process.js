@@ -1,23 +1,32 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 "use strict";
 
 ((window) => {
   const core = window.Deno.core;
-  const { File } = window.__bootstrap.files;
-  const { readAll } = window.__bootstrap.buffer;
-  const { assert, pathFromURL } = window.__bootstrap.util;
+  const ops = core.ops;
+  const { FsFile } = window.__bootstrap.files;
+  const { readAll } = window.__bootstrap.io;
+  const { pathFromURL } = window.__bootstrap.util;
+  const { assert } = window.__bootstrap.infra;
+  const {
+    ArrayPrototypeMap,
+    ArrayPrototypeSlice,
+    TypeError,
+    ObjectEntries,
+    String,
+  } = window.__bootstrap.primordials;
 
   function opKill(pid, signo) {
-    core.jsonOpSync("op_kill", { pid, signo });
+    ops.op_kill(pid, signo);
   }
 
   function opRunStatus(rid) {
-    return core.jsonOpAsync("op_run_status", { rid });
+    return core.opAsync("op_run_status", rid);
   }
 
   function opRun(request) {
     assert(request.cmd.length > 0);
-    return core.jsonOpSync("op_run", request);
+    return ops.op_run(request);
   }
 
   async function runStatus(rid) {
@@ -39,15 +48,15 @@
       this.pid = res.pid;
 
       if (res.stdinRid && res.stdinRid > 0) {
-        this.stdin = new File(res.stdinRid);
+        this.stdin = new FsFile(res.stdinRid);
       }
 
       if (res.stdoutRid && res.stdoutRid > 0) {
-        this.stdout = new File(res.stdoutRid);
+        this.stdout = new FsFile(res.stdoutRid);
       }
 
       if (res.stderrRid && res.stderrRid > 0) {
-        this.stderr = new File(res.stderrRid);
+        this.stderr = new FsFile(res.stderrRid);
       }
     }
 
@@ -86,31 +95,30 @@
     }
   }
 
-  function isRid(arg) {
-    return !isNaN(arg);
-  }
-
   function run({
     cmd,
     cwd = undefined,
+    clearEnv = false,
     env = {},
+    gid = undefined,
+    uid = undefined,
     stdout = "inherit",
     stderr = "inherit",
     stdin = "inherit",
   }) {
     if (cmd[0] != null) {
-      cmd[0] = pathFromURL(cmd[0]);
+      cmd = [pathFromURL(cmd[0]), ...ArrayPrototypeSlice(cmd, 1)];
     }
     const res = opRun({
-      cmd: cmd.map(String),
+      cmd: ArrayPrototypeMap(cmd, String),
       cwd,
-      env: Object.entries(env),
-      stdin: isRid(stdin) ? "" : stdin,
-      stdout: isRid(stdout) ? "" : stdout,
-      stderr: isRid(stderr) ? "" : stderr,
-      stdinRid: isRid(stdin) ? stdin : 0,
-      stdoutRid: isRid(stdout) ? stdout : 0,
-      stderrRid: isRid(stderr) ? stderr : 0,
+      clearEnv,
+      env: ObjectEntries(env),
+      gid,
+      uid,
+      stdin,
+      stdout,
+      stderr,
     });
     return new Process(res);
   }

@@ -1,4 +1,4 @@
-// Copyright 2018-2021 the Deno authors. All rights reserved. MIT license.
+// Copyright 2018-2022 the Deno authors. All rights reserved. MIT license.
 
 // Documentation partially adapted from [MDN](https://developer.mozilla.org/),
 // by Mozilla Contributors, which is licensed under CC-BY-SA 2.5.
@@ -11,16 +11,20 @@
 /// <reference lib="deno.fetch" />
 /// <reference lib="deno.websocket" />
 /// <reference lib="deno.crypto" />
+/// <reference lib="deno.broadcast_channel" />
 
+/** @category WebAssembly */
 declare namespace WebAssembly {
   /**
    * The `WebAssembly.CompileError` object indicates an error during WebAssembly decoding or validation.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/CompileError)
+   *
+   * @category WebAssembly
    */
   export class CompileError extends Error {
     /** Creates a new `WebAssembly.CompileError` object. */
-    constructor();
+    constructor(message?: string, options?: ErrorOptions);
   }
 
   /**
@@ -29,6 +33,8 @@ declare namespace WebAssembly {
    * instances. This allows dynamic linking of multiple modules.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Global)
+   *
+   * @category WebAssembly
    */
   export class Global {
     /** Creates a new `Global` object. */
@@ -50,6 +56,8 @@ declare namespace WebAssembly {
    * WebAssembly code from JavaScript.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Instance)
+   *
+   * @category WebAssembly
    */
   export class Instance {
     /** Creates a new Instance object. */
@@ -68,10 +76,12 @@ declare namespace WebAssembly {
    * (besides traps from the start function).
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/LinkError)
+   *
+   * @category WebAssembly
    */
   export class LinkError extends Error {
     /** Creates a new WebAssembly.LinkError object. */
-    constructor();
+    constructor(message?: string, options?: ErrorOptions);
   }
 
   /**
@@ -82,13 +92,15 @@ declare namespace WebAssembly {
    * from both JavaScript and WebAssembly.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Memory)
+   *
+   * @category WebAssembly
    */
   export class Memory {
     /** Creates a new `Memory` object. */
     constructor(descriptor: MemoryDescriptor);
 
     /** An accessor property that returns the buffer contained in the memory. */
-    readonly buffer: ArrayBuffer;
+    readonly buffer: ArrayBuffer | SharedArrayBuffer;
 
     /**
      * Increases the size of the memory instance by a specified number of WebAssembly
@@ -102,6 +114,8 @@ declare namespace WebAssembly {
    * by the browser — this can be efficiently shared with Workers, and instantiated multiple times.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Module)
+   *
+   * @category WebAssembly
    */
   export class Module {
     /** Creates a new `Module` object. */
@@ -110,7 +124,7 @@ declare namespace WebAssembly {
     /**
      * Given a `Module` and string, returns a copy of the contents of all custom sections in the
      * module with the given string name.
-     * */
+     */
     static customSections(
       moduleObject: Module,
       sectionName: string,
@@ -128,10 +142,12 @@ declare namespace WebAssembly {
    * specifies a trap.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/RuntimeError)
+   *
+   * @category WebAssembly
    */
   export class RuntimeError extends Error {
     /** Creates a new `WebAssembly.RuntimeError` object. */
-    constructor();
+    constructor(message?: string, options?: ErrorOptions);
   }
 
   /**
@@ -141,6 +157,8 @@ declare namespace WebAssembly {
    * and WebAssembly.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/Table)
+   *
+   * @category WebAssembly
    */
   export class Table {
     /** Creates a new `Table` object. */
@@ -159,39 +177,63 @@ declare namespace WebAssembly {
     set(index: number, value: Function | null): void;
   }
 
-  /** The `GlobalDescriptor` describes the options you can pass to `new WebAssembly.Global()`. */
+  /** The `GlobalDescriptor` describes the options you can pass to
+   * `new WebAssembly.Global()`.
+   *
+   * @category WebAssembly
+   */
   export interface GlobalDescriptor {
     mutable?: boolean;
     value: ValueType;
   }
 
-  /** The `MemoryDescriptor` describes the options you can pass to `new WebAssembly.Memory()`. */
+  /** The `MemoryDescriptor` describes the options you can pass to
+   * `new WebAssembly.Memory()`.
+   *
+   * @category WebAssembly
+   */
   export interface MemoryDescriptor {
     initial: number;
     maximum?: number;
+    shared?: boolean;
   }
 
-  /** A `ModuleExportDescriptor` is the description of a declared export in a `WebAssembly.Module`. */
+  /** A `ModuleExportDescriptor` is the description of a declared export in a
+   * `WebAssembly.Module`.
+   *
+   * @category WebAssembly
+   */
   export interface ModuleExportDescriptor {
     kind: ImportExportKind;
     name: string;
   }
 
-  /** A `ModuleImportDescriptor` is the description of a declared import in a `WebAssembly.Module`. */
+  /** A `ModuleImportDescriptor` is the description of a declared import in a
+   * `WebAssembly.Module`.
+   *
+   * @category WebAssembly
+   */
   export interface ModuleImportDescriptor {
     kind: ImportExportKind;
     module: string;
     name: string;
   }
 
-  /** The `TableDescriptor` describes the options you can pass to `new WebAssembly.Table()`. */
+  /** The `TableDescriptor` describes the options you can pass to
+   * `new WebAssembly.Table()`.
+   *
+   * @category WebAssembly
+   */
   export interface TableDescriptor {
     element: TableKind;
     initial: number;
     maximum?: number;
   }
 
-  /** The value returned from `WebAssembly.instantiate` and `WebAssembly.instantiateStreaming`. */
+  /** The value returned from `WebAssembly.instantiate`.
+   *
+   * @category WebAssembly
+   */
   export interface WebAssemblyInstantiatedSource {
     /* A `WebAssembly.Instance` object that contains all the exported WebAssembly functions. */
     instance: Instance;
@@ -203,13 +245,21 @@ declare namespace WebAssembly {
     module: Module;
   }
 
+  /** @category WebAssembly */
   export type ImportExportKind = "function" | "global" | "memory" | "table";
+  /** @category WebAssembly */
   export type TableKind = "anyfunc";
+  /** @category WebAssembly */
   export type ValueType = "f32" | "f64" | "i32" | "i64";
+  /** @category WebAssembly */
   export type ExportValue = Function | Global | Memory | Table;
+  /** @category WebAssembly */
   export type Exports = Record<string, ExportValue>;
+  /** @category WebAssembly */
   export type ImportValue = ExportValue | number;
+  /** @category WebAssembly */
   export type ModuleImports = Record<string, ImportValue>;
+  /** @category WebAssembly */
   export type Imports = Record<string, ModuleImports>;
 
   /**
@@ -219,16 +269,20 @@ declare namespace WebAssembly {
    * function should be used).
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/compile)
+   *
+   * @category WebAssembly
    */
   export function compile(bytes: BufferSource): Promise<Module>;
 
   /**
    * The `WebAssembly.compileStreaming()` function compiles a `WebAssembly.Module`
-   * directly from a streamed underlying source.  This function is useful if it
-   * is necessary to a compile a module before it can be instantiated (otherwise,
-   * the `WebAssembly.instantiateStreaming()` function should be used).
+   * directly from a streamed underlying source. This function is useful if it is
+   * necessary to a compile a module before it can be instantiated (otherwise, the
+   * `WebAssembly.instantiateStreaming()` function should be used).
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/compileStreaming)
+   *
+   * @category WebAssembly
    */
   export function compileStreaming(
     source: Response | Promise<Response>,
@@ -244,6 +298,8 @@ declare namespace WebAssembly {
    * WebAssembly.Instance.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/instantiate)
+   *
+   * @category WebAssembly
    */
   export function instantiate(
     bytes: BufferSource,
@@ -259,6 +315,8 @@ declare namespace WebAssembly {
    * if the Module has already been compiled.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/instantiate)
+   *
+   * @category WebAssembly
    */
   export function instantiate(
     moduleObject: Module,
@@ -268,9 +326,11 @@ declare namespace WebAssembly {
   /**
    * The `WebAssembly.instantiateStreaming()` function compiles and instantiates a
    * WebAssembly module directly from a streamed underlying source. This is the most
-   * efficient, optimized way to load WebAssembly code.
+   * efficient, optimized way to load wasm code.
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/instantiateStreaming)
+   *
+   * @category WebAssembly
    */
   export function instantiateStreaming(
     response: Response | PromiseLike<Response>,
@@ -283,6 +343,8 @@ declare namespace WebAssembly {
    * module (`true`) or not (`false`).
    *
    * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WebAssembly/validate)
+   *
+   * @category WebAssembly
    */
   export function validate(bytes: BufferSource): boolean;
 }
@@ -290,7 +352,11 @@ declare namespace WebAssembly {
 /** Sets a timer which executes a function once after the timer expires. Returns
  * an id which may be used to cancel the timeout.
  *
- *     setTimeout(() => { console.log('hello'); }, 500);
+ * ```ts
+ * setTimeout(() => { console.log('hello'); }, 500);
+ * ```
+ *
+ * @category Timers
  */
 declare function setTimeout(
   /** callback function to execute when timer expires */
@@ -303,8 +369,12 @@ declare function setTimeout(
 
 /** Repeatedly calls a function , with a fixed time delay between each call.
  *
- *     // Outputs 'hello' to the console every 500ms
- *     setInterval(() => { console.log('hello'); }, 500);
+ * ```ts
+ * // Outputs 'hello' to the console every 500ms
+ * setInterval(() => { console.log('hello'); }, 500);
+ * ```
+ *
+ * @category Timers
  */
 declare function setInterval(
   /** callback function to execute when timer expires */
@@ -318,20 +388,29 @@ declare function setInterval(
 /** Cancels a timed, repeating action which was previously started by a call
  * to `setInterval()`
  *
- *     const id = setInterval(() => {console.log('hello');}, 500);
- *     ...
- *     clearInterval(id);
+ * ```ts
+ * const id = setInterval(() => {console.log('hello');}, 500);
+ * // ...
+ * clearInterval(id);
+ * ```
+ *
+ * @category Timers
  */
 declare function clearInterval(id?: number): void;
 
 /** Cancels a scheduled action initiated by `setTimeout()`
  *
- *     const id = setTimeout(() => {console.log('hello');}, 500);
- *     ...
- *     clearTimeout(id);
+ * ```ts
+ * const id = setTimeout(() => {console.log('hello');}, 500);
+ * // ...
+ * clearTimeout(id);
+ * ```
+ *
+ * @category Timers
  */
 declare function clearTimeout(id?: number): void;
 
+/** @category Scheduling */
 interface VoidFunction {
   (): void;
 }
@@ -342,44 +421,28 @@ interface VoidFunction {
  * script's execution environment. This event loop may be either the main event
  * loop or the event loop driving a web worker.
  *
- *     queueMicrotask(() => { console.log('This event loop stack is complete'); });
+ * ```ts
+ * queueMicrotask(() => { console.log('This event loop stack is complete'); });
+ * ```
+ *
+ * @category Scheduling
  */
 declare function queueMicrotask(func: VoidFunction): void;
-
-/** Registers an event listener in the global scope, which will be called
- * synchronously whenever the event `type` is dispatched.
- *
- *     addEventListener('unload', () => { console.log('All finished!'); });
- *     ...
- *     dispatchEvent(new Event('unload'));
- */
-declare function addEventListener(
-  type: string,
-  callback: EventListenerOrEventListenerObject | null,
-  options?: boolean | AddEventListenerOptions | undefined,
-): void;
 
 /** Dispatches an event in the global scope, synchronously invoking any
  * registered event listeners for this event in the appropriate order. Returns
  * false if event is cancelable and at least one of the event handlers which
  * handled this event called Event.preventDefault(). Otherwise it returns true.
  *
- *     dispatchEvent(new Event('unload'));
+ * ```ts
+ * dispatchEvent(new Event('unload'));
+ * ```
+ *
+ * @category DOM Events
  */
 declare function dispatchEvent(event: Event): boolean;
 
-/** Remove a previously registered event listener from the global scope
- *
- *     const lstnr = () => { console.log('hello'); };
- *     addEventListener('load', lstnr);
- *     removeEventListener('load', lstnr);
- */
-declare function removeEventListener(
-  type: string,
-  callback: EventListenerOrEventListenerObject | null,
-  options?: boolean | EventListenerOptions | undefined,
-): void;
-
+/** @category DOM */
 interface DOMStringList {
   /** Returns the number of strings in strings. */
   readonly length: number;
@@ -390,28 +453,13 @@ interface DOMStringList {
   [index: number]: string;
 }
 
+/** @category Typed Arrays */
 type BufferSource = ArrayBufferView | ArrayBuffer;
 
+/** @category Console and Debugging */
 declare var console: Console;
 
-interface MessageEventInit<T = any> extends EventInit {
-  data?: T;
-  origin?: string;
-  lastEventId?: string;
-}
-
-declare class MessageEvent<T = any> extends Event {
-  /**
-   * Returns the data of the message.
-   */
-  readonly data: T;
-  /**
-   * Returns the last event ID string, for server-sent events.
-   */
-  readonly lastEventId: string;
-  constructor(type: string, eventInitDict?: MessageEventInit);
-}
-
+/** @category DOM Events */
 interface ErrorEventInit extends EventInit {
   message?: string;
   filename?: string;
@@ -420,6 +468,7 @@ interface ErrorEventInit extends EventInit {
   error?: any;
 }
 
+/** @category DOM Events */
 declare class ErrorEvent extends Event {
   readonly message: string;
   readonly filename: string;
@@ -429,34 +478,47 @@ declare class ErrorEvent extends Event {
   constructor(type: string, eventInitDict?: ErrorEventInit);
 }
 
-interface PostMessageOptions {
-  transfer?: any[];
+/** @category Observability */
+interface PromiseRejectionEventInit extends EventInit {
+  promise: Promise<any>;
+  reason?: any;
 }
 
+/** @category Observability */
+declare class PromiseRejectionEvent extends Event {
+  readonly promise: Promise<any>;
+  readonly reason: any;
+  constructor(type: string, eventInitDict?: PromiseRejectionEventInit);
+}
+
+/** @category Web Workers */
 interface AbstractWorkerEventMap {
   "error": ErrorEvent;
 }
 
+/** @category Web Workers */
 interface WorkerEventMap extends AbstractWorkerEventMap {
   "message": MessageEvent;
   "messageerror": MessageEvent;
 }
 
+/** @category Web Workers */
 interface WorkerOptions {
   type?: "classic" | "module";
   name?: string;
 }
 
+/** @category Web Workers */
 declare class Worker extends EventTarget {
   onerror?: (e: ErrorEvent) => void;
   onmessage?: (e: MessageEvent) => void;
   onmessageerror?: (e: MessageEvent) => void;
   constructor(
-    specifier: string,
+    specifier: string | URL,
     options?: WorkerOptions,
   );
-  postMessage(message: any, transfer: ArrayBuffer[]): void;
-  postMessage(message: any, options?: PostMessageOptions): void;
+  postMessage(message: any, transfer: Transferable[]): void;
+  postMessage(message: any, options?: StructuredSerializeOptions): void;
   addEventListener<K extends keyof WorkerEventMap>(
     type: K,
     listener: (this: Worker, ev: WorkerEventMap[K]) => any,
@@ -480,9 +542,13 @@ declare class Worker extends EventTarget {
   terminate(): void;
 }
 
+/** @category Performance API */
 declare type PerformanceEntryList = PerformanceEntry[];
 
-declare class Performance {
+/** @category Performance API */
+declare class Performance extends EventTarget {
+  /** Returns a timestamp representing the start of the performance measurement. */
+  readonly timeOrigin: number;
   constructor();
 
   /** Removes the stored timestamp with the associated name. */
@@ -522,10 +588,15 @@ declare class Performance {
    * ```
    */
   now(): number;
+
+  /** Returns a JSON representation of the performance object. */
+  toJSON(): any;
 }
 
+/** @category Performance API */
 declare var performance: Performance;
 
+/** @category Performance API */
 declare interface PerformanceMarkOptions {
   /** Metadata to be included in the mark. */
   detail?: any;
@@ -539,7 +610,7 @@ declare interface PerformanceMeasureOptions {
   detail?: any;
 
   /** Timestamp to be used as the start time or string to be used as start
-   * mark.*/
+   * mark. */
   start?: string | number;
 
   /** Duration between the start and end times. */
@@ -552,7 +623,10 @@ declare interface PerformanceMeasureOptions {
 /** Encapsulates a single performance metric that is part of the performance
  * timeline. A performance entry can be directly created by making a performance
  * mark or measure (for example by calling the `.mark()` method) at an explicit
- * point in an application. */
+ * point in an application.
+ *
+ * @category Performance API
+ */
 declare class PerformanceEntry {
   readonly duration: number;
   readonly entryType: string;
@@ -564,7 +638,10 @@ declare class PerformanceEntry {
 /** `PerformanceMark` is an abstract interface for `PerformanceEntry` objects
  * with an entryType of `"mark"`. Entries of this type are created by calling
  * `performance.mark()` to add a named `DOMHighResTimeStamp` (the mark) to the
- * performance timeline. */
+ * performance timeline.
+ *
+ * @category Performance API
+ */
 declare class PerformanceMark extends PerformanceEntry {
   readonly detail: any;
   readonly entryType: "mark";
@@ -574,16 +651,21 @@ declare class PerformanceMark extends PerformanceEntry {
 /** `PerformanceMeasure` is an abstract interface for `PerformanceEntry` objects
  * with an entryType of `"measure"`. Entries of this type are created by calling
  * `performance.measure()` to add a named `DOMHighResTimeStamp` (the measure)
- * between two marks to the performance timeline. */
+ * between two marks to the performance timeline.
+ *
+ * @category Performance API
+ */
 declare class PerformanceMeasure extends PerformanceEntry {
   readonly detail: any;
   readonly entryType: "measure";
 }
 
+/** @category DOM Events */
 declare interface CustomEventInit<T = any> extends EventInit {
   detail?: T;
 }
 
+/** @category DOM Events */
 declare class CustomEvent<T = any> extends Event {
   constructor(typeArg: string, eventInitDict?: CustomEventInit<T>);
   /** Returns any custom data event was created with. Typically used for
@@ -593,7 +675,6 @@ declare class CustomEvent<T = any> extends Event {
 
 interface ErrorConstructor {
   /** See https://v8.dev/docs/stack-trace-api#stack-trace-collection-for-custom-exceptions. */
-  // eslint-disable-next-line @typescript-eslint/ban-types
   captureStackTrace(error: Object, constructor?: Function): void;
   // TODO(nayeemrmn): Support `Error.prepareStackTrace()`. We currently use this
   // internally in a way that makes it unavailable for users.
