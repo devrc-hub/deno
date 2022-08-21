@@ -6,84 +6,169 @@
 #![allow(dead_code)]
 
 #[macro_use]
-extern crate lazy_static;
-#[macro_use]
 extern crate log;
 
-pub(crate) mod ast;
+pub mod args;
 pub(crate) mod auth_tokens;
+mod cache;
+mod cdp;
 pub(crate) mod checksum;
-pub mod colors;
+mod compat;
 pub(crate) mod deno_dir;
 pub(crate) mod diagnostics;
-// pub(crate) mod diff;
-pub(crate) mod disk_cache;
+mod diff;
+mod display;
+mod emit;
 pub mod errors;
 pub mod file_fetcher;
-// pub(crate) mod file_watcher;
-pub mod flags;
-pub mod flags_allow_net;
+pub mod file_watcher;
 pub mod fmt_errors;
 pub(crate) mod fs_util;
+pub(crate) mod graph_util;
 pub(crate) mod http_cache;
 pub(crate) mod http_util;
-pub(crate) mod import_map;
-pub(crate) mod info;
 pub(crate) mod lockfile;
-pub mod media_type;
-pub(crate) mod module_graph;
+mod logger;
+mod lsp;
 pub mod module_loader;
+#[allow(unused)]
+mod npm;
 pub mod ops;
-pub mod program_state;
-pub mod source_maps;
-pub(crate) mod specifier_handler;
-// pub(crate) mod standalone;
+pub mod proc_state;
+mod resolver;
+mod standalone;
 pub(crate) mod text_encoding;
-// pub(crate) mod tokio_util;
-// pub(crate) mod tools;
+mod tools;
 pub(crate) mod tsc;
-pub(crate) mod tsc_config;
+mod unix_util;
 pub mod version;
-pub mod workers;
+mod windows_util;
+pub mod worker;
 
-use deno_core::{error::AnyError, serde_json};
+use crate::args::flags_from_vec;
+use crate::args::BenchFlags;
+use crate::args::BundleFlags;
+use crate::args::CacheFlags;
+use crate::args::CheckFlags;
+use crate::args::CompileFlags;
+use crate::args::CompletionsFlags;
+use crate::args::CoverageFlags;
+use crate::args::DenoSubcommand;
+use crate::args::DocFlags;
+use crate::args::EvalFlags;
+use crate::args::Flags;
+use crate::args::FmtFlags;
+use crate::args::InfoFlags;
+use crate::args::InstallFlags;
+use crate::args::LintFlags;
+use crate::args::ReplFlags;
+use crate::args::RunFlags;
+use crate::args::TaskFlags;
+use crate::args::TestFlags;
+use crate::args::TypeCheckMode;
+use crate::args::UninstallFlags;
+use crate::args::UpgradeFlags;
+use crate::args::VendorFlags;
+use crate::cache::TypeCheckCache;
+use crate::emit::TsConfigType;
+use crate::file_fetcher::File;
+use crate::file_watcher::ResolutionResult;
+use crate::fmt_errors::format_js_error;
+use crate::graph_util::graph_lock_or_exit;
+use crate::graph_util::graph_valid;
+use crate::proc_state::ProcState;
+use crate::resolver::ImportMapResolver;
+use crate::resolver::JsxResolver;
+
+use args::CliOptions;
+use deno_ast::MediaType;
+use deno_core::error::generic_error;
+use deno_core::error::AnyError;
+use deno_core::error::JsError;
+use deno_core::futures::future::FutureExt;
+use deno_core::futures::Future;
+use deno_core::parking_lot::RwLock;
+use deno_core::resolve_url_or_path;
+use deno_core::serde_json;
+use deno_core::serde_json::json;
+use deno_core::v8_set_flags;
+use deno_core::ModuleSpecifier;
+use deno_runtime::colors;
+use deno_runtime::permissions::Permissions;
+use deno_runtime::tokio_util::run_local;
+use log::debug;
+use log::info;
+use std::env;
+use std::io::Read;
 use std::io::Write;
+use std::iter::once;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
+use worker::create_main_worker;
 
 pub fn get_types(unstable: bool) -> String {
-    let mut types = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        crate::tsc::DENO_NS_LIB,
-        crate::tsc::DENO_WEB_LIB,
-        crate::tsc::DENO_FETCH_LIB,
-        crate::tsc::DENO_WEBGPU_LIB,
-        crate::tsc::DENO_WEBSOCKET_LIB,
-        crate::tsc::SHARED_GLOBALS_LIB,
-        crate::tsc::WINDOW_LIB,
-    );
+  let mut types = vec![
+    crate::tsc::DENO_NS_LIB,
+    crate::tsc::DENO_CONSOLE_LIB,
+    crate::tsc::DENO_URL_LIB,
+    crate::tsc::DENO_WEB_LIB,
+    crate::tsc::DENO_FETCH_LIB,
+    crate::tsc::DENO_WEBGPU_LIB,
+    crate::tsc::DENO_WEBSOCKET_LIB,
+    crate::tsc::DENO_WEBSTORAGE_LIB,
+    crate::tsc::DENO_CRYPTO_LIB,
+    crate::tsc::DENO_BROADCAST_CHANNEL_LIB,
+    crate::tsc::DENO_NET_LIB,
+    crate::tsc::SHARED_GLOBALS_LIB,
+    crate::tsc::WINDOW_LIB,
+  ];
 
-    if unstable {
-        types.push_str(&format!("\n{}", crate::tsc::UNSTABLE_NS_LIB,));
-    }
+  if unstable {
+    types.push(crate::tsc::UNSTABLE_NS_LIB);
+  }
 
-    types
+  types.join("\n")
 }
 
-pub fn write_to_stdout_ignore_sigpipe(bytes: &[u8]) -> Result<(), std::io::Error> {
-    use std::io::ErrorKind;
+pub fn write_to_stdout_ignore_sigpipe(
+  bytes: &[u8],
+) -> Result<(), std::io::Error> {
+  use std::io::ErrorKind;
 
-    match std::io::stdout().write_all(bytes) {
-        Ok(()) => Ok(()),
-        Err(e) => match e.kind() {
-            ErrorKind::BrokenPipe => Ok(()),
-            _ => Err(e),
-        },
-    }
+  match std::io::stdout().write_all(bytes) {
+    Ok(()) => Ok(()),
+    Err(e) => match e.kind() {
+      ErrorKind::BrokenPipe => Ok(()),
+      _ => Err(e),
+    },
+  }
 }
 
 pub fn write_json_to_stdout<T>(value: &T) -> Result<(), AnyError>
 where
-    T: ?Sized + serde::ser::Serialize,
+  T: ?Sized + serde::ser::Serialize,
 {
-    let writer = std::io::BufWriter::new(std::io::stdout());
-    serde_json::to_writer_pretty(writer, value).map_err(AnyError::from)
+  let mut writer = std::io::BufWriter::new(std::io::stdout());
+  serde_json::to_writer_pretty(&mut writer, value)?;
+  writeln!(&mut writer)?;
+  Ok(())
+}
+
+fn unwrap_or_exit<T>(result: Result<T, AnyError>) -> T {
+  match result {
+    Ok(value) => value,
+    Err(error) => {
+      let error_string = match error.downcast_ref::<JsError>() {
+        Some(e) => format_js_error(e),
+        None => format!("{:?}", error),
+      };
+      eprintln!(
+        "{}: {}",
+        colors::red_bold("error"),
+        error_string.trim_start_matches("error: ")
+      );
+      std::process::exit(1);
+    }
+  }
 }

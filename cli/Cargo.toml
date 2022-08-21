@@ -10,11 +10,9 @@ license = "MIT"
 repository = "https://github.com/denoland/deno"
 description = "Provides the deno executable"
 
-
 [[bin]]
 name = "deno"
 path = "main.rs"
-
 
 [lib]
 name = "deno_3p_lib"
@@ -64,7 +62,7 @@ deno_task_shell = "0.5.0"
 atty = "=0.2.14"
 base64 = "=0.13.0"
 cache_control = "=0.2.0"
-chrono = "=0.4.19"
+chrono = "=0.4.22"
 clap = "=3.1.12"
 clap_complete = "=3.1.2"
 clap_complete_fig = "=3.1.5"
@@ -82,7 +80,7 @@ http = "=0.2.6"
 import_map = "=0.12.1"
 indexmap = "1.8.1"
 jsonc-parser = { version = "=0.21.0", features = ["serde"] }
-libc = "=0.2.126"
+libc = "=0.2.127"
 log = { version = "=0.4.17", features = ["serde"] }
 mitata = '=0.0.7'
 node_resolver = "=0.1.1"

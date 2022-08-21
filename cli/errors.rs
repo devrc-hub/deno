@@ -25,7 +25,6 @@ fn get_diagnostic_class(_: &Diagnostic) -> &'static str {
   "SyntaxError"
 }
 
-
 fn get_graph_error_class(err: &GraphError) -> &'static str {
   get_module_graph_error_class(&err.0)
 }
@@ -53,7 +52,6 @@ fn get_resolution_error_class(err: &ResolutionError) -> &'static str {
     _ => "TypeError",
   }
 }
-
 
 pub fn get_error_class_name(e: &AnyError) -> &'static str {
   deno_runtime::errors::get_error_class_name(e)
