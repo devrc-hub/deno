@@ -23,6 +23,7 @@
     "cli/dts/lib.d.ts",
     "cli/dts/lib.dom*",
     "cli/dts/lib.es*",
+    "cli/lib.rs",
     "cli/dts/lib.scripthost.d.ts",
     "cli/dts/lib.webworker*.d.ts",
     "cli/dts/typescript.d.ts",

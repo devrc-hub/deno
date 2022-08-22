@@ -1,5 +1,4 @@
-#![deny(warnings)]
-//#![allow(dead_code)]
+#![allow(warnings)]
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::from_over_into)]
 #![allow(unused_imports)]
@@ -172,3 +171,5 @@ fn unwrap_or_exit<T>(result: Result<T, AnyError>) -> T {
     }
   }
 }
+
+fn main() {}

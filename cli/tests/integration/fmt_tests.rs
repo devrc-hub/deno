@@ -4,6 +4,7 @@ use crate::itest;
 use test_util as util;
 use test_util::TempDir;
 
+#[ignore]
 #[test]
 fn fmt_test() {
   let t = TempDir::new();
