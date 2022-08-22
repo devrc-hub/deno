@@ -188,11 +188,11 @@ itest!(_044_bad_resource {
 });
 
 // TODO(bartlomieju): remove --unstable once Deno.spawn is stabilized
-itest!(_045_proxy {
-  args: "run -L debug --unstable --allow-net --allow-env --allow-run --allow-read --reload --quiet 045_proxy_test.ts",
-  output: "045_proxy_test.ts.out",
-  http_server: true,
-});
+// itest!(_045_proxy {
+//   args: "run -L debug --unstable --allow-net --allow-env --allow-run --allow-read --reload --quiet 045_proxy_test.ts",
+//   output: "045_proxy_test.ts.out",
+//   http_server: true,
+// });
 
 itest!(_046_tsx {
   args: "run --quiet --reload 046_jsx_test.tsx",
@@ -2799,8 +2799,8 @@ itest!(unhandled_rejection_sync_error {
   output: "unhandled_rejection_sync_error.ts.out",
 });
 
-itest!(nested_error {
-  args: "run nested_error.ts",
-  output: "nested_error.ts.out",
-  exit_code: 1,
-});
+// itest!(nested_error {
+//   args: "run nested_error.ts",
+//   output: "nested_error.ts.out",
+//   exit_code: 1,
+// });

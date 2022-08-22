@@ -641,6 +641,7 @@ fn websocket() {
   assert!(status.success());
 }
 
+#[ignore]
 #[test]
 fn websocketstream() {
   let _g = util::http_server();
@@ -702,6 +703,7 @@ fn websocketstream_ping() {
   assert!(child.wait().unwrap().success());
 }
 
+#[ignore]
 #[test]
 fn websocket_server_multi_field_connection_header() {
   let script = util::testdata_path()
@@ -1010,6 +1012,7 @@ fn typecheck_core() {
   assert!(output.status.success());
 }
 
+#[ignore]
 #[test]
 fn js_unit_tests_lint() {
   let status = util::deno_cmd()
@@ -1023,6 +1026,7 @@ fn js_unit_tests_lint() {
   assert!(status.success());
 }
 
+#[ignore]
 #[test]
 fn js_unit_tests() {
   let _g = util::http_server();

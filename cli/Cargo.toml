@@ -17,6 +17,10 @@ path = "main.rs"
 [lib]
 name = "deno_3p_lib"
 path = "lib.rs"
+test = false
+doctest = false
+harness = false
+crate-type = ["lib"]
 
 [[bench]]
 name = "deno_bench"
