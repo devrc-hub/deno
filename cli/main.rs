@@ -23,7 +23,7 @@ mod lockfile;
 mod logger;
 mod lsp;
 mod module_loader;
-#[allow(unused)]
+mod node;
 mod npm;
 mod ops;
 mod proc_state;
@@ -51,6 +51,7 @@ use crate::args::EvalFlags;
 use crate::args::Flags;
 use crate::args::FmtFlags;
 use crate::args::InfoFlags;
+use crate::args::InitFlags;
 use crate::args::InstallFlags;
 use crate::args::LintFlags;
 use crate::args::ReplFlags;
@@ -244,7 +245,8 @@ async fn compile_command(
 
   graph.valid().unwrap();
 
-  let eszip = eszip::EszipV2::from_graph(graph, Default::default())?;
+  let store = ps.parsed_source_cache.as_store();
+  let eszip = eszip::EszipV2::from_graph(graph, &*store, Default::default())?;
 
   info!(
     "{} {}",
@@ -270,6 +272,14 @@ async fn compile_command(
 
   tools::standalone::write_standalone_binary(output_path, final_bin).await?;
 
+  Ok(0)
+}
+
+async fn init_command(
+  _flags: Flags,
+  init_flags: InitFlags,
+) -> Result<i32, AnyError> {
+  tools::init::init_project(init_flags).await?;
   Ok(0)
 }
 
@@ -453,6 +463,7 @@ async fn create_graph_and_maybe_check(
       .as_ref()
       .map(|im| im.as_resolver())
   };
+  let analyzer = ps.parsed_source_cache.as_analyzer();
   let graph = Arc::new(
     deno_graph::create_graph(
       vec![(root, deno_graph::ModuleKind::Esm)],
@@ -461,7 +472,7 @@ async fn create_graph_and_maybe_check(
       &mut cache,
       maybe_resolver,
       maybe_locker,
-      None,
+      Some(&*analyzer),
       None,
     )
     .await,
@@ -547,7 +558,6 @@ async fn bundle_command(
 
       debug!(">>>>> bundle START");
       let ps = ProcState::from_options(cli_options).await?;
-
       let graph =
         create_graph_and_maybe_check(module_specifier, &ps, debug).await?;
 
@@ -941,6 +951,9 @@ fn get_subcommand(
     DenoSubcommand::Fmt(fmt_flags) => {
       format_command(flags, fmt_flags).boxed_local()
     }
+    DenoSubcommand::Init(init_flags) => {
+      init_command(flags, init_flags).boxed_local()
+    }
     DenoSubcommand::Info(info_flags) => {
       info_command(flags, info_flags).boxed_local()
     }
@@ -1058,9 +1071,7 @@ pub fn main() {
 
     logger::init(flags.log_level);
 
-    let exit_code = get_subcommand(flags).await;
-
-    exit_code
+    get_subcommand(flags).await
   };
 
   let exit_code = unwrap_or_exit(run_local(exit_code));
