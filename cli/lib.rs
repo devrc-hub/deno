@@ -30,6 +30,7 @@ pub(crate) mod lockfile;
 mod logger;
 mod lsp;
 pub mod module_loader;
+pub mod node;
 #[allow(unused)]
 mod npm;
 pub mod ops;

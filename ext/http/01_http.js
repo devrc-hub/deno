@@ -13,6 +13,7 @@
     newInnerRequest,
     newInnerResponse,
     fromInnerResponse,
+    _flash,
   } = window.__bootstrap.fetch;
   const core = window.Deno.core;
   const { BadResourcePrototype, InterruptedPrototype, ops } = core;
@@ -475,6 +476,12 @@
   }
 
   function upgradeHttp(req) {
+    if (req[_flash]) {
+      throw new TypeError(
+        "Flash requests can not be upgraded with `upgradeHttp`. Use `upgradeHttpRaw` instead.",
+      );
+    }
+
     req[_deferred] = new Deferred();
     return req[_deferred].promise;
   }
@@ -483,5 +490,6 @@
     HttpConn,
     upgradeWebSocket,
     upgradeHttp,
+    _ws,
   };
 })(this);
