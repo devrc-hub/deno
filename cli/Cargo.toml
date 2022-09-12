@@ -4,15 +4,12 @@
 name = "deno_3p_lib"
 version = "1.25.2"
 authors = ["the Deno authors"]
-default-run = "deno"
+# default-run = "deno_3p_lib"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/denoland/deno"
 description = "Provides the deno executable"
-
-[[bin]]
-name = "deno"
-path = "main.rs"
+exclude = ["/tests/*", "/bench/testdata/*"]
 
 [lib]
 name = "deno_3p_lib"
@@ -20,7 +17,7 @@ path = "lib.rs"
 test = false
 doctest = false
 harness = false
-crate-type = ["lib"]
+# crate-type = ["lib"]
 
 [[bench]]
 name = "deno_bench"
