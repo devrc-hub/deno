@@ -282,6 +282,7 @@ declare namespace Deno {
    */
   export function systemMemoryInfo(): SystemMemoryInfo;
 
+  /** @category Runtime Environment */
   export interface SystemMemoryInfo {
     /** Total installed memory */
     total: number;
@@ -393,12 +394,19 @@ declare namespace Deno {
     | "usize"
     | "isize";
 
+  /** @category FFI */
+  type NativeBooleanType = "bool";
+
+  /** @category FFI */
   type NativePointerType = "pointer";
 
+  /** @category FFI */
   type NativeBufferType = "buffer";
 
+  /** @category FFI */
   type NativeFunctionType = "function";
 
+  /** @category FFI */
   type NativeVoidType = "void";
 
   /** All possible types for interfacing with foreign functions.
@@ -408,6 +416,7 @@ declare namespace Deno {
   export type NativeType =
     | NativeNumberType
     | NativeBigIntType
+    | NativeBooleanType
     | NativePointerType
     | NativeBufferType
     | NativeFunctionType;
@@ -419,9 +428,10 @@ declare namespace Deno {
   type ToNativeTypeMap =
     & Record<NativeNumberType, number>
     & Record<NativeBigIntType, PointerValue>
+    & Record<NativeBooleanType, boolean>
     & Record<NativePointerType, PointerValue | null>
     & Record<NativeFunctionType, PointerValue | null>
-    & Record<NativeBufferType, TypedArray>;
+    & Record<NativeBufferType, TypedArray | null>;
 
   /** Type conversion for foreign symbol parameters and unsafe callback return
    * types.
@@ -455,6 +465,7 @@ declare namespace Deno {
   type FromNativeTypeMap =
     & Record<NativeNumberType, number>
     & Record<NativeBigIntType, PointerValue>
+    & Record<NativeBooleanType, boolean>
     & Record<NativePointerType, PointerValue>
     & Record<NativeBufferType, PointerValue>
     & Record<NativeFunctionType, PointerValue>;
@@ -610,6 +621,8 @@ declare namespace Deno {
 
     pointer: bigint;
 
+    /** Gets a boolean at the specified byte offset from the pointer. */
+    getBool(offset?: number): boolean;
     /** Gets an unsigned 8-bit integer at the specified byte offset from the pointer. */
     getUint8(offset?: number): number;
     /** Gets a signed 8-bit integer at the specified byte offset from the pointer. */
@@ -633,12 +646,12 @@ declare namespace Deno {
     /** Gets a C string (null terminated string) at the specified byte offset from the pointer. */
     getCString(offset?: number): string;
     /** Gets a C string (null terminated string) at the specified byte offset from the specified pointer. */
-    static getCString(pointer: BigInt, offset?: number): string;
+    static getCString(pointer: PointerValue, offset?: number): string;
     /** Gets an ArrayBuffer of length `byteLength` at the specified byte offset from the pointer. */
     getArrayBuffer(byteLength: number, offset?: number): ArrayBuffer;
     /** Gets an ArrayBuffer of length `byteLength` at the specified byte offset from the specified pointer. */
     static getArrayBuffer(
-      pointer: BigInt,
+      pointer: PointerValue,
       byteLength: number,
       offset?: number,
     ): ArrayBuffer;
@@ -646,7 +659,7 @@ declare namespace Deno {
     copyInto(destination: TypedArray, offset?: number): void;
     /** Copies the memory of the specified pointer into a typed array. Length is determined from the typed array's `byteLength`. Also takes optional byte offset from the pointer. */
     static copyInto(
-      pointer: BigInt,
+      pointer: PointerValue,
       destination: TypedArray,
       offset?: number,
     ): void;
@@ -669,6 +682,7 @@ declare namespace Deno {
     call: FromForeignFunction<Fn>;
   }
 
+  /** @category FFI */
   export interface UnsafeCallbackDefinition<
     Parameters extends readonly NativeType[] = readonly NativeType[],
     Result extends NativeResultType = NativeResultType,
@@ -677,6 +691,7 @@ declare namespace Deno {
     result: Result;
   }
 
+  /** @category FFI */
   type UnsafeCallbackFunction<
     Parameters extends readonly NativeType[] = readonly NativeType[],
     Result extends NativeResultType = NativeResultType,
@@ -742,7 +757,11 @@ declare namespace Deno {
     close(): void;
   }
 
-  /** A dynamic library resource */
+  /**
+   * A dynamic library resource
+   *
+   * @category FFI
+   */
   export interface DynamicLibrary<S extends ForeignLibraryInterface> {
     /** All of the registered library along with functions for calling them */
     symbols: StaticForeignLibraryInterface<S>;
@@ -1058,6 +1077,7 @@ declare namespace Deno {
     options: UnixListenOptions & { transport: "unixpacket" },
   ): DatagramConn;
 
+  /** @category Network */
   export interface UnixConnectOptions {
     transport: "unix";
     path: string;
@@ -1089,6 +1109,7 @@ declare namespace Deno {
     options: UnixConnectOptions,
   ): Promise<UnixConn>;
 
+  /** @category Network */
   export interface ConnectTlsOptions {
     /** PEM formatted client certificate chain. */
     certChain?: string;
@@ -1329,6 +1350,7 @@ declare namespace Deno {
    * const cert = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n";
    * const key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n";
    * Deno.serve({ cert, key }, (_req) => new Response("Hello, world"));
+   * ```
    *
    * @category HTTP Server
    */
@@ -1534,12 +1556,14 @@ declare namespace Deno {
     options?: SpawnOptions,
   ): SpawnOutput;
 
+  /** @category Sub Process */
   export interface ChildStatus {
     success: boolean;
     code: number;
     signal: Signal | null;
   }
 
+  /** @category Sub Process */
   export interface SpawnOutput extends ChildStatus {
     get stdout(): Uint8Array;
     get stderr(): Uint8Array;

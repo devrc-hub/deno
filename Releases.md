@@ -6,6 +6,83 @@ https://github.com/denoland/deno/releases
 We also have one-line install commands at:
 https://github.com/denoland/deno_install
 
+### 1.25.2 / 2022.09.09
+
+- BREAKING(unstable): remove --compat mode (#15678)
+- feat(ext/ffi): Implement FFI fast-call trampoline with Dynasmrt (#15305)
+- feat(ext/ffi): Support bool FFI type (#15754)
+- feat(serde_v8): Support StringObject as unit enum variant (#15715)
+- fix(bench): make sure bytes/response is equal (#15763)
+- fix(cli): Fix panic when providing invalid urls to --reload (#15784)
+- fix(cli): allow using file resource synchronously while being used async
+  (#15747)
+- fix(cli/repl): await Promise.any([])... (#15623)
+- fix(core): Register external references for imports to the SnapshotCreator
+  (#15621)
+- fix(core): make errors more resistant to tampering (#15789)
+- fix(core): opAsync leaks a promise on type error (#15795)
+- fix(docs): add missing categories for unstable (#15807)
+- fix(docs): change category for Deno.Process to "Sub Process" (#15812)
+- fix(ext/flash): use utf8 length as Content-Length (#15793)
+- fix(ext/timers): create primordial `eval` (#15110)
+- fix(init): suppress info logs when using quiet mode (#15741)
+- fix(npm): add more context to errors when file doesn't exist (#15749)
+- fix(npm): conditional exports in npm: specifiers (#15778)
+- fix(npm): correct exact matching of pre-release versions (#15745)
+- fix(npm): recursive translation of reexports, remove window global in node
+  code (#15806)
+- fix(npm): respect `latest` dist tag for getting current version (#15746)
+- fix(ops): use qualified borrow in op macro (#15769)
+- fix(repl): don't terminate on unhandled error events (#15548)
+- fix(test): unflake wasm_unreachable test (#15794)
+- fix(watch): ignore unload errors on drop (#15782)
+- fix: upgrade deno_ast to 0.19 (#15808)
+- perf(ops): inline &[u8] arguments and enable fast API (#15731)
+- perf(runtime): flatten arguments for write_file ops (#15776)
+- perf(runtime): short-circuit `queue_async_op` for Poll::Ready (#15773)
+
+### 1.25.1 / 2022.09.01
+
+- feat(ops): support `v8::FastApiCallbackOptions` (#15721)
+- feat(serde_v8): Serialize integers as BigInt (#15692)
+- fix(check): --remote and --no-remote should be mutually exclusive (#14964)
+- fix(cli): `deno upgrade --canary` always downloaded latest version even if it
+  was already latest (#15639)
+- fix(compile): panic when running with a populated dep analysis cache (#15672)
+- fix(docs): add missing categories (#15684)
+- fix(ext/ffi): Fix pointer types (#15730)
+- fix(ext/flash): add missing backticks in server docs (#15644)
+- fix(ext/flash): panic on AddrInUse (#15607)
+- fix(ext/flash): retry write failures (#15591)
+- fix(ext/node): add missing primordial (#15595)
+- fix(ext/node): better error for importing ES module via require() call
+  (#15671)
+- fix(ext/node): fix global in node env (#15622)
+- fix(ext/websocket): fix closing of WebSocketStream with unread messages
+  (#15632)
+- fix(fmt): add the file path to the panic messages when formatting is unstable
+  (#15693)
+- fix(npm): better node version and version requirement compatibility (#15714)
+- fix(npm): conditional exports with wildcards (#15652)
+- fix(npm): handle cjs re-exports with the same name as an export (#15626)
+- fix(npm): ignore npm cache directory creation errors (#15728)
+- fix(npm): ignore the unstable error in the lsp (#15727)
+- fix(npm): prefer importing esm from esm (#15676)
+- fix(npm): skip extracting pax_global_header from tarballs (#15677)
+- fix(npm): translate CJS to ESM with name clashes for files and dirs (#15697)
+- fix(serde_v8): no panic on reading large text file (#15494)
+- fix(serde_v8): update bytes::Bytes layout assumptions (#15718)
+- fix: avoid global declaration collisions in cjs (#15608)
+- fix: config file errors should not print specifier with debug formatting
+  (#15648)
+- fix: typo in deno_ops README (#15606)
+- perf(ext/web): flatten op arguments for text_encoding (#15723)
+- perf(ops): inline String args (#15681)
+- perf(runtime): optimize allocations in read/write checks (#15631)
+- perf: use fast api for `core.isProxy` (#15682)
+- perf: use fast api for op_now (#15643)
+- serde_v8: fix pointer size assumptions (#15613)
+
 ### 1.25.0 / 2022.08.24
 
 - BREAKING(ext/ffi): specialized `buffer` type (#15518)
